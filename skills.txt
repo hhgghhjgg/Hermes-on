@@ -1,0 +1,293 @@
+# ============================================================
+# Hermes Skills - COMPLETE LIST (201 skills)
+# Source: https://hermes-agent.nousresearch.com/docs/reference/skills-catalog
+#         https://hermes-agent.nousresearch.com/docs/reference/optional-skills-catalog
+# ============================================================
+#
+# NOTE: Bundled skills are auto-copied from /app/hermes-agent/skills/
+#       Optional skills are installed via `hermes skill install`
+#       Skills marked with [GPU] need GPU, [HW] need hardware
+#       Skills marked with [MAC] only work on macOS
+#
+# ============================================================
+
+
+# ============================================================
+# BUNDLED SKILLS (72) - Auto-copied from Hermes source
+# ============================================================
+
+# --- Apple (4) [MAC] ---
+apple-notes
+apple-reminders
+findmy
+imessage
+
+# --- Autonomous AI Agents (5) ---
+claude-code
+codex
+computer-use
+hermes-agent
+opencode
+
+# --- Creative (16) ---
+architecture-diagram
+ascii-art
+ascii-video
+baoyu-infographic
+claude-design
+comfyui
+design-md
+excalidraw
+humanizer
+manim-video
+p5js
+popular-web-designs
+pretext
+sketch
+songwriting-and-ai-music
+touchdesigner-mcp
+
+# --- Email (1) ---
+himalaya
+
+# --- GitHub (6) ---
+codebase-inspection
+github-auth
+github-code-review
+github-issues
+github-pr-workflow
+github-repo-management
+
+# --- Media (3) ---
+gif-search
+songsee
+youtube-content
+
+# --- MLOps (5) [GPU] ---
+evaluating-llms-harness
+huggingface-hub
+llama-cpp
+serving-llms-vllm
+weights-and-biases
+
+# --- Note-taking (1) ---
+obsidian
+
+# --- Productivity (11) ---
+airtable
+docx
+google-workspace
+maps
+nano-pdf
+notion
+ocr-and-documents
+pdf
+powerpoint
+teams-meeting-pipeline
+xlsx
+
+# --- Research (6) ---
+arxiv
+blogwatcher
+grounded-citations
+llm-wiki
+polymarket
+research-paper-writing
+
+# --- Smart Home (1) [HW] ---
+openhue
+
+# --- Social Media (1) ---
+xurl
+
+# --- Software Development (12) ---
+dogfood
+hermes-agent-skill-authoring
+inspecting-hermes-desktop-dom
+node-inspect-debugger
+plan
+python-debugpy
+requesting-code-review
+simplify-code
+spike
+systematic-debugging
+test-driven-development
+
+
+# ============================================================
+# OPTIONAL SKILLS (129) - Installed from Skills Hub
+# ============================================================
+
+# --- Autonomous AI Agents (5) ---
+antigravity-cli
+blackbox
+grok
+honcho
+openhands
+
+# --- Blockchain (3) ---
+evm
+hyperliquid
+solana
+
+# --- Communication (1) ---
+one-three-one-rule
+
+# --- Creative (13) ---
+audiocraft-audio-generation
+baoyu-article-illustrator
+baoyu-comic
+blender-mcp
+concept-diagrams
+creative-ideation
+heartmula
+hyperframes
+kanban-video-orchestrator
+meme-generation
+pixel-art
+tldraw-offline
+unreal-mcp
+
+# --- Data Science (1) ---
+jupyter-notebook
+
+# --- DevOps (6) ---
+actual-setup
+inference-sh-cli
+docker-management
+hermes-s6-container-supervision
+pinggy-tunnel
+watchers
+
+# --- Dogfood (1) ---
+adversarial-ux-test
+
+# --- Email (1) ---
+agentmail
+
+# --- Finance (8) ---
+3-statement-model
+comps-analysis
+dcf-model
+excel-author
+lbo-model
+merger-model
+pptx-author
+stocks
+
+# --- Gaming (2) ---
+minecraft-modpack-server
+pokemon-player
+
+# --- Health (2) ---
+fitness-nutrition
+neuroskill-bci
+
+# --- MCP (3) ---
+fastmcp
+mcp-oauth-remote-gateway
+mcporter
+
+# --- Migration (1) ---
+openclaw-migration
+
+# --- MLOps (30) [GPU] ---
+huggingface-accelerate
+axolotl
+chroma
+clip
+dspy
+faiss
+optimizing-attention-flash
+guidance
+huggingface-tokenizers
+instructor
+lambda-labs-gpu-cloud
+llava
+modal-serverless-gpu
+nemo-curator
+obliteratus
+outlines
+peft-fine-tuning
+pinecone
+pytorch-fsdp
+pytorch-lightning
+qdrant-vector-search
+sparse-autoencoder-training
+segment-anything-model
+simpo-training
+slime-rl-training
+stable-diffusion-image-generation
+tensorrt-llm
+distributed-llm-pretraining-torchtitan
+fine-tuning-with-trl
+unsloth
+whisper
+
+# --- Payments (3) ---
+mpp-agent
+stripe-link-cli
+stripe-projects
+
+# --- Productivity (7) ---
+canvas
+here.now
+memento-flashcards
+shop
+shopify
+siyuan
+telephony
+
+# --- Research (12) ---
+bioinformatics
+darwinian-evolver
+domain-intel
+drug-discovery
+duckduckgo-search
+gitnexus-explorer
+osint-investigation
+parallel-cli
+pinecone-research
+qmd
+scrapling
+searxng-search
+
+# --- Security (6) ---
+1password
+godmode
+oss-forensics
+sherlock
+unbroker
+web-pentest
+
+# --- Software Development (3) ---
+code-wiki
+rest-graphql-debug
+subagent-driven-development
+
+# --- Web Development (2) ---
+cloudflare-temporary-deploy
+page-agent
+
+# --- Yuanbao (1) ---
+yuanbao
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+# Bundled:  72 skills (auto-copied from /app/hermes-agent/skills/)
+# Optional: 129 skills (installed via hermes skill install)
+# TOTAL:    201 skills
+# ============================================================
+# 
+# LEGEND:
+# [MAC] = macOS only (will be skipped on Linux)
+# [GPU] = requires GPU (will fail on Render Free)
+# [HW]  = requires hardware (Philips Hue, etc.)
+#
+# The entrypoint.sh will:
+# 1. Copy ALL bundled skills (72) from source
+# 2. Try to install ALL optional skills (129) - skipping failures
+# 3. Continue even if some skills fail to install
+# ============================================================
