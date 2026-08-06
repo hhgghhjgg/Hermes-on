@@ -24,13 +24,13 @@ while true; do
             git add -A
             git commit -m "sync #$counter @ $(date '+%H:%M:%S')" >/dev/null 2>&1
             
-            # 🔥 خطای دقیق را نشان می‌دهیم
-            echo "[SYNC #$counter] Pushing to ${GITHUB_REPO}..."
-            PUSH_OUTPUT=$(git push origin main 2>&1)
+            # 🔥 force push (چون این repo فقط برای sync است)
+            echo "[SYNC #$counter] Force pushing to ${GITHUB_REPO}..."
+            PUSH_OUTPUT=$(git push --force origin main 2>&1)
             PUSH_STATUS=$?
             
             if [ $PUSH_STATUS -eq 0 ]; then
-                echo "[SYNC #$counter] ✅ Pushed to GitHub"
+                echo "[SYNC #$counter] ✅ Force pushed to GitHub"
             else
                 echo "[SYNC #$counter] ❌ Push FAILED (code: $PUSH_STATUS)"
                 echo "[SYNC #$counter] === ERROR DETAILS ==="
