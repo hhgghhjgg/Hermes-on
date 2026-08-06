@@ -59,15 +59,14 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
     if git fetch origin 2>&1; then
         echo "[ENTRYPOINT] ✅ Fetch successful"
         
-        # Check if origin/main exists
         if git rev-parse --verify origin/main >/dev/null 2>&1; then
             echo "[ENTRYPOINT] origin/main found - restoring data..."
             
-            # Force reset to remote state (this restores all chats, skills, memory!)
+            # Force reset to remote state
             git reset --hard origin/main 2>&1 || echo "[ENTRYPOINT] ⚠️ Reset had warnings"
             
-            # Remove any untracked files
-            git clean -fd 2>&1 || true
+            # Remove any untracked files (but NOT state.db!)
+            git clean -fd -e "state.db*" 2>&1 || true
             
             echo "[ENTRYPOINT] ✅ Data restored from GitHub successfully!"
             echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
@@ -76,14 +75,13 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
             echo "[ENTRYPOINT] origin/master found (legacy branch)..."
             git branch -M main
             git reset --hard origin/master 2>&1 || true
-            git clean -fd 2>&1 || true
+            git clean -fd -e "state.db*" 2>&1 || true
             echo "[ENTRYPOINT] ✅ Data restored from origin/master"
             
         else
             echo "[ENTRYPOINT] ⚠️ No remote branch found - starting fresh"
             echo "[ENTRYPOINT] Creating initial commit..."
             
-            # Create initial files
             cat > .gitignore <<'EOF'
 *.key
 *.pem
@@ -146,16 +144,20 @@ EOF
 fi
 
 # ============================================================
-# Cleanup incompatible state.db (schema mismatch)
+# 🔥 FIXED: DO NOT archive state.db - just warn
 # ============================================================
 if [ -f "$HERMES_DIR/state.db" ]; then
+    echo "[ENTRYPOINT] state.db found - keeping it (WebUI will handle schema)"
+    
+    # Check schema but don't archive
     if ! sqlite3 "$HERMES_DIR/state.db" "SELECT source FROM sessions LIMIT 1" 2>/dev/null; then
-        BACKUP_NAME="state.db.bak.$(date +%s)"
-        mv "$HERMES_DIR/state.db" "$HERMES_DIR/$BACKUP_NAME"
-        echo "[ENTRYPOINT] Archived incompatible state.db as $BACKUP_NAME"
+        echo "[ENTRYPOINT] ⚠️ state.db has old schema - WebUI may show warnings"
+        echo "[ENTRYPOINT] ⚠️ This is OK - your chats are safe!"
     else
-        echo "[ENTRYPOINT] state.db schema OK"
+        echo "[ENTRYPOINT] ✅ state.db schema is current"
     fi
+else
+    echo "[ENTRYPOINT] ℹ️ No state.db found - WebUI will create new one"
 fi
 
 # ============================================================
@@ -169,7 +171,6 @@ echo "=========================================="
 SYNC_PID=$!
 echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
 
-# Wait a bit to verify sync started
 sleep 2
 if kill -0 $SYNC_PID 2>/dev/null; then
     echo "[ENTRYPOINT] ✅ sync.sh is running"
@@ -200,11 +201,9 @@ cleanup() {
     echo "[ENTRYPOINT] Shutting down - forcing final sync..."
     echo "=========================================="
     
-    # Kill sync script
     kill $SYNC_PID 2>/dev/null || true
     wait $SYNC_PID 2>/dev/null || true
     
-    # Final commit and push
     cd "$HERMES_DIR"
     if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
         echo "[ENTRYPOINT] Committing final changes..."
@@ -221,7 +220,6 @@ cleanup() {
     exit 0
 }
 
-# Trap signals for graceful shutdown
 trap cleanup SIGTERM SIGINT SIGQUIT SIGHUP
 
 # ============================================================
@@ -233,5 +231,4 @@ echo "=========================================="
 
 cd /app/hermes-webui
 
-# Execute WebUI and filter noisy warnings
 exec python server.py 2>&1 | grep -v "state.db" | grep -v "agent session listing skipped" | grep -v "Token from GITHUB_TOKEN is not supported"
