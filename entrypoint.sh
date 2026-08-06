@@ -285,6 +285,25 @@ else
 fi
 
 # ============================================================
+# 🔥 START QWEN PROXY (NEW!)
+# ============================================================
+echo "=========================================="
+echo "[ENTRYPOINT] Starting Qwen OAuth Proxy..."
+echo "=========================================="
+
+python3 /app/qwen-proxy.py 2>&1 &
+PROXY_PID=$!
+echo "[ENTRYPOINT] Qwen Proxy PID: $PROXY_PID"
+
+sleep 3
+if kill -0 $PROXY_PID 2>/dev/null; then
+    echo "[ENTRYPOINT] ✅ Qwen Proxy is running on port 8080"
+    echo "[ENTRYPOINT] ✅ Configure Hermes to use: http://localhost:8080/v1"
+else
+    echo "[ENTRYPOINT] ❌ Qwen Proxy FAILED to start!"
+fi
+
+# ============================================================
 # Set Environment Variables
 # ============================================================
 export HERMES_HOME="$HERMES_DIR"
@@ -311,7 +330,9 @@ cleanup() {
     echo "=========================================="
     
     kill $SYNC_PID 2>/dev/null || true
+    kill $PROXY_PID 2>/dev/null || true
     wait $SYNC_PID 2>/dev/null || true
+    wait $PROXY_PID 2>/dev/null || true
     
     cd "$HERMES_DIR"
     if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
