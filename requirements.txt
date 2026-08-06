@@ -1,0 +1,39 @@
+# ============================================================
+# Hermes + WebUI Deployment - Python Dependencies
+# ============================================================
+# NOTE:
+# The Dockerfile already installs the real dependencies by:
+#   1) `pip install -e .` inside the cloned hermes-agent repo
+#   2) `pip install -r requirements.txt` inside the cloned hermes-webui repo
+#
+# This file is a SUPPLEMENTARY / REFERENCE list for:
+#   - Running the stack locally WITHOUT Docker
+#   - Ensuring the agent-bridge packages (openai, httpx, ...) exist
+#
+# Keep versions loose (>=) so builds do not break on upstream updates.
+# ============================================================
+
+# --- Core agent / LLM bridge (required by hermes-webui server.py) ---
+openai>=1.30.0
+httpx>=0.27.0
+requests>=2.31.0
+
+# --- Config & environment handling ---
+pyyaml>=6.0.1
+python-dotenv>=1.0.1
+
+# --- Git automation (optional, used if you switch sync.sh to Python) ---
+gitpython>=3.1.43
+
+# --- Utilities / resilience ---
+tenacity>=8.2.3
+typing-extensions>=4.10.0
+
+# --- Markdown / rendering helpers used by the WebUI ---
+markdown>=3.6
+
+# ============================================================
+# If you deploy with Docker (recommended), you do NOT need to
+# `pip install -r requirements.txt` manually — the Dockerfile
+# handles everything. This file only matters for local testing.
+# ============================================================
