@@ -5,83 +5,162 @@ echo "=========================================="
 echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
+# ============================================================
+# Git Configuration
+# ============================================================
 git config --global user.email "hermes-bot@example.com"
 git config --global user.name "Hermes Bot"
 git config --global init.defaultBranch main
+git config --global pull.rebase false
 
+# ============================================================
+# Directory Setup
+# ============================================================
 DATA_DIR="/data"
 HERMES_DIR="$DATA_DIR/.hermes"
 
 mkdir -p "$HERMES_DIR"
 mkdir -p "$HERMES_DIR/webui"
 mkdir -p "$HERMES_DIR/skills"
+mkdir -p "$HERMES_DIR/plans"
 
 echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
 echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
+echo "[ENTRYPOINT] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
 
+# ============================================================
+# Git Initialization & Remote Setup
+# ============================================================
 cd "$HERMES_DIR"
 
-# 🔥 استراتژی جدید: همیشه از remote شروع کن
+if [ ! -d ".git" ]; then
+    echo "[ENTRYPOINT] Initializing new git repo..."
+    git init -b main
+fi
+
 if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
-    echo "[ENTRYPOINT] Setting up GitHub remote..."
     REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
     
-    # اگر git repo وجود ندارد، init کن
-    if [ ! -d ".git" ]; then
-        echo "[ENTRYPOINT] Initializing new git repo..."
-        git init
-    fi
-    
-    # remote را تنظیم کن
     if git remote get-url origin >/dev/null 2>&1; then
         git remote set-url origin "$REMOTE_URL"
+        echo "[ENTRYPOINT] Remote URL updated"
     else
         git remote add origin "$REMOTE_URL"
+        echo "[ENTRYPOINT] Remote origin added"
     fi
     
-    # 🔥 مرحله حیاتی: fetch و reset به remote
-    echo "[ENTRYPOINT] Fetching from GitHub..."
-    if git fetch origin main 2>&1; then
+    # ============================================================
+    # 🔥 KEY STEP: Fetch and Restore from GitHub
+    # ============================================================
+    echo "[ENTRYPOINT] =========================================="
+    echo "[ENTRYPOINT] Fetching data from GitHub..."
+    echo "[ENTRYPOINT] =========================================="
+    
+    if git fetch origin 2>&1; then
         echo "[ENTRYPOINT] ✅ Fetch successful"
         
-        # بررسی کن آیا remote branch وجود دارد
-        if git rev-parse origin/main >/dev/null 2>&1; then
-            echo "[ENTRYPOINT] Resetting to origin/main..."
-            # 🔥 force reset به remote (همه تغییرات local را از بین می‌برد)
-            git reset --hard origin/main 2>&1 || echo "[ENTRYPOINT] ⚠️ Reset warning"
+        # Check if origin/main exists
+        if git rev-parse --verify origin/main >/dev/null 2>&1; then
+            echo "[ENTRYPOINT] origin/main found - restoring data..."
+            
+            # Force reset to remote state (this restores all chats, skills, memory!)
+            git reset --hard origin/main 2>&1 || echo "[ENTRYPOINT] ⚠️ Reset had warnings"
+            
+            # Remove any untracked files
             git clean -fd 2>&1 || true
-            echo "[ENTRYPOINT] ✅ Data restored from GitHub"
+            
+            echo "[ENTRYPOINT] ✅ Data restored from GitHub successfully!"
+            echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
+            
+        elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+            echo "[ENTRYPOINT] origin/master found (legacy branch)..."
+            git branch -M main
+            git reset --hard origin/master 2>&1 || true
+            git clean -fd 2>&1 || true
+            echo "[ENTRYPOINT] ✅ Data restored from origin/master"
+            
         else
-            echo "[ENTRYPOINT] ⚠️ No remote data - starting fresh"
+            echo "[ENTRYPOINT] ⚠️ No remote branch found - starting fresh"
+            echo "[ENTRYPOINT] Creating initial commit..."
+            
+            # Create initial files
+            cat > .gitignore <<'EOF'
+*.key
+*.pem
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.log
+*.journal
+state.db-journal
+state.db-wal
+node_modules/
+.DS_Store
+EOF
+            
             touch .keep
-            git add .
-            git commit -m "Initial commit" 2>/dev/null || true
+            git add -A
+            git commit -m "Initial commit from Docker entrypoint" 2>/dev/null || true
+            git branch -M main
+            git push -u origin main 2>&1 || echo "[ENTRYPOINT] ⚠️ Initial push failed"
         fi
     else
-        echo "[ENTRYPOINT] ⚠️ Fetch failed - starting fresh"
-        if [ ! -d ".git" ]; then
-            git init
+        echo "[ENTRYPOINT] ⚠️ Fetch failed - checking if we have local data"
+        
+        if [ -z "$(ls -A .)" ]; then
+            echo "[ENTRYPOINT] Empty directory - creating initial commit"
+            touch .keep
+            git add -A
+            git commit -m "Initial commit" 2>/dev/null || true
+        else
+            echo "[ENTRYPOINT] Local data exists - using it"
         fi
-        touch .keep
-        git add .
-        git commit -m "Initial commit" 2>/dev/null || true
     fi
 else
-    echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
-    echo "[ENTRYPOINT] Data will NOT persist!"
-    if [ ! -d ".git" ]; then
-        git init
-    fi
+    echo "[ENTRYPOINT] ❌ CRITICAL: GITHUB_TOKEN or GITHUB_REPO NOT SET!"
+    echo "[ENTRYPOINT] ❌ Data will NOT persist across restarts!"
 fi
 
-# Cleanup incompatible state.db
+# ============================================================
+# Create .gitignore if missing
+# ============================================================
+if [ ! -f ".gitignore" ]; then
+    cat > .gitignore <<'EOF'
+*.key
+*.pem
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.log
+*.journal
+state.db-journal
+state.db-wal
+node_modules/
+.DS_Store
+EOF
+    echo "[ENTRYPOINT] .gitignore created"
+fi
+
+# ============================================================
+# Cleanup incompatible state.db (schema mismatch)
+# ============================================================
 if [ -f "$HERMES_DIR/state.db" ]; then
     if ! sqlite3 "$HERMES_DIR/state.db" "SELECT source FROM sessions LIMIT 1" 2>/dev/null; then
-        mv "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.bak.$(date +%s)"
-        echo "[ENTRYPOINT] Archived incompatible state.db"
+        BACKUP_NAME="state.db.bak.$(date +%s)"
+        mv "$HERMES_DIR/state.db" "$HERMES_DIR/$BACKUP_NAME"
+        echo "[ENTRYPOINT] Archived incompatible state.db as $BACKUP_NAME"
+    else
+        echo "[ENTRYPOINT] state.db schema OK"
     fi
 fi
 
+# ============================================================
+# Start Background Sync
+# ============================================================
 echo "=========================================="
 echo "[ENTRYPOINT] Starting sync.sh in background..."
 echo "=========================================="
@@ -90,6 +169,7 @@ echo "=========================================="
 SYNC_PID=$!
 echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
 
+# Wait a bit to verify sync started
 sleep 2
 if kill -0 $SYNC_PID 2>/dev/null; then
     echo "[ENTRYPOINT] ✅ sync.sh is running"
@@ -97,31 +177,61 @@ else
     echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
 fi
 
-echo "=========================================="
-echo "[ENTRYPOINT] Starting Hermes WebUI..."
-echo "=========================================="
-
+# ============================================================
+# Set Environment Variables for WebUI
+# ============================================================
 export HERMES_HOME="$HERMES_DIR"
 export HERMES_WEBUI_STATE_DIR="$HERMES_DIR/webui"
 export HERMES_WEBUI_AGENT_DIR="/app/hermes-agent"
 export HERMES_WEBUI_HOST="${HERMES_WEBUI_HOST:-0.0.0.0}"
 export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 
+echo "[ENTRYPOINT] HERMES_HOME: $HERMES_HOME"
+echo "[ENTRYPOINT] HERMES_WEBUI_STATE_DIR: $HERMES_WEBUI_STATE_DIR"
+echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
+echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
+
+# ============================================================
+# Graceful Shutdown Handler
+# ============================================================
 cleanup() {
     echo ""
+    echo "=========================================="
     echo "[ENTRYPOINT] Shutting down - forcing final sync..."
+    echo "=========================================="
+    
+    # Kill sync script
     kill $SYNC_PID 2>/dev/null || true
+    wait $SYNC_PID 2>/dev/null || true
+    
+    # Final commit and push
     cd "$HERMES_DIR"
     if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+        echo "[ENTRYPOINT] Committing final changes..."
         git add -A
-        git commit -m "sync: shutdown" 2>/dev/null || true
-        git push --force origin main 2>&1 || true
-        echo "[ENTRYPOINT] ✅ Final sync done"
+        git commit -m "sync: final shutdown @ $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null || true
+        
+        echo "[ENTRYPOINT] Pushing to GitHub..."
+        git push --force origin main 2>&1 || echo "[ENTRYPOINT] ⚠️ Final push failed"
+        echo "[ENTRYPOINT] ✅ Final sync completed"
+    else
+        echo "[ENTRYPOINT] No changes to sync"
     fi
+    
     exit 0
 }
 
-trap cleanup SIGTERM SIGINT SIGQUIT
+# Trap signals for graceful shutdown
+trap cleanup SIGTERM SIGINT SIGQUIT SIGHUP
+
+# ============================================================
+# Start Hermes WebUI
+# ============================================================
+echo "=========================================="
+echo "[ENTRYPOINT] Starting Hermes WebUI..."
+echo "=========================================="
 
 cd /app/hermes-webui
-exec python server.py 2>&1 | grep -v "state.db" | grep -v "agent session listing skipped"
+
+# Execute WebUI and filter noisy warnings
+exec python server.py 2>&1 | grep -v "state.db" | grep -v "agent session listing skipped" | grep -v "Token from GITHUB_TOKEN is not supported"
