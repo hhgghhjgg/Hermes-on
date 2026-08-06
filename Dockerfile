@@ -28,12 +28,17 @@ RUN git clone https://github.com/nesquena/hermes-webui.git /app/hermes-webui && 
     cd /app/hermes-webui && \
     pip install --no-cache-dir -r requirements.txt
 
+# Install Qwen Proxy dependencies
+RUN pip install --no-cache-dir flask requests
+
 # Copy our scripts
 COPY entrypoint.sh /app/entrypoint.sh
 COPY sync.sh /app/sync.sh
+COPY qwen-proxy.py /app/qwen-proxy.py
+COPY auth-extract.sh /app/auth-extract.sh
 
 # Make scripts executable
-RUN chmod +x /app/entrypoint.sh /app/sync.sh
+RUN chmod +x /app/entrypoint.sh /app/sync.sh /app/auth-extract.sh
 
 # Create data directory
 RUN mkdir -p /data
@@ -44,9 +49,11 @@ ENV HERMES_WEBUI_STATE_DIR=/data/.hermes/webui
 ENV HERMES_WEBUI_AGENT_DIR=/app/hermes-agent
 ENV HERMES_WEBUI_HOST=0.0.0.0
 ENV HERMES_WEBUI_PORT=8787
+ENV QWEN_PROXY_PORT=8080
 
-# Expose port
+# Expose ports
 EXPOSE 8787
+EXPOSE 8080
 
 # Set entrypoint
 ENTRYPOINT ["/app/entrypoint.sh"]
