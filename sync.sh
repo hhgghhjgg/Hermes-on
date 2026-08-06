@@ -4,7 +4,6 @@ DATA_DIR="/data"
 HERMES_DIR="$DATA_DIR/.hermes"
 SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
 
-# 🔥 لاگ به stdout (نه فایل) تا در Render Logs دیده شود
 echo "=========================================="
 echo "[SYNC] Started at $(date)"
 echo "[SYNC] Interval: ${SYNC_INTERVAL}s"
@@ -12,7 +11,7 @@ echo "[SYNC] GitHub Repo: ${GITHUB_REPO:-NOT SET}"
 echo "[SYNC] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
 echo "=========================================="
 
-cd "$HERMES_DIR" || { echo "[SYNC] ERROR: Cannot cd to $HERMES_DIR"; exit 1; }
+cd "$HERMES_DIR" || exit 1
 
 counter=0
 while true; do
@@ -25,16 +24,23 @@ while true; do
             git add -A
             git commit -m "sync #$counter @ $(date '+%H:%M:%S')" >/dev/null 2>&1
             
-            if timeout 60 git push origin main >/dev/null 2>&1; then
+            # 🔥 خطای دقیق را نشان می‌دهیم
+            echo "[SYNC #$counter] Pushing to ${GITHUB_REPO}..."
+            PUSH_OUTPUT=$(git push origin main 2>&1)
+            PUSH_STATUS=$?
+            
+            if [ $PUSH_STATUS -eq 0 ]; then
                 echo "[SYNC #$counter] ✅ Pushed to GitHub"
             else
-                echo "[SYNC #$counter] ❌ Push FAILED"
+                echo "[SYNC #$counter] ❌ Push FAILED (code: $PUSH_STATUS)"
+                echo "[SYNC #$counter] === ERROR DETAILS ==="
+                echo "$PUSH_OUTPUT"
+                echo "======================="
             fi
         else
             echo "[SYNC #$counter] ✓ No changes"
         fi
     else
-        echo "[SYNC #$counter] ⚠️ GITHUB_TOKEN or GITHUB_REPO missing!"
-        sleep 60
+        echo "[SYNC #$counter] ⚠️ Token or Repo missing!"
     fi
 done
