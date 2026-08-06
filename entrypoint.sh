@@ -2,61 +2,52 @@
 set -e
 
 echo "=========================================="
-echo " Hermes + WebUI Docker Entrypoint"
+echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
-# Set Git credentials (required for commits)
 git config --global user.email "hermes-bot@example.com"
 git config --global user.name "Hermes Bot"
+git config --global init.defaultBranch main
 
-# Define data directory
 DATA_DIR="/data"
 HERMES_DIR="$DATA_DIR/.hermes"
 
-# Create data directory if not exists
 mkdir -p "$HERMES_DIR"
+mkdir -p "$HERMES_DIR/webui"
+mkdir -p "$HERMES_DIR/skills"
 
-# Initialize git repository in data directory if not exists
+echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
+echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
+
+# Init git
 if [ ! -d "$HERMES_DIR/.git" ]; then
-    echo "Initializing git repository in $HERMES_DIR..."
+    echo "[ENTRYPOINT] Initializing git..."
     cd "$HERMES_DIR"
     git init
-else
-    echo "Git repository already exists in $HERMES_DIR."
-    cd "$HERMES_DIR"
-fi
-
-# Create a .gitignore to avoid committing sensitive/temp files
-cat > "$HERMES_DIR/.gitignore" <<'EOF'
-# Ignore sensitive files
+    
+    cat > .gitignore <<'EOF'
 *.key
 *.pem
-*.env
-
-# Ignore cache
+.env
 __pycache__/
 *.pyc
 *.pyo
-
-# Ignore temporary files
 *.tmp
-*.temp
-*.log
-
-# Ignore large binary files (optional)
-*.zip
-*.tar.gz
+*.journal
+state.db-journal
+state.db-wal
+node_modules/
 EOF
+    
+    git add .gitignore
+    git commit -m "Initial setup" 2>/dev/null || true
+fi
 
-# Add .gitignore to git
 cd "$HERMES_DIR"
-git add .gitignore 2>/dev/null || true
-git commit -m "Add .gitignore" 2>/dev/null || true
 
-# Pull latest data from GitHub if token is provided
+# Setup remote
 if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
-    echo "Configuring GitHub remote..."
-    # GITHUB_REPO should be like: username/repo-name
+    echo "[ENTRYPOINT] Setting up GitHub remote..."
     REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
     
     if git remote get-url origin >/dev/null 2>&1; then
@@ -65,41 +56,73 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
         git remote add origin "$REMOTE_URL"
     fi
     
-    echo "Pulling latest data from GitHub..."
-    if git pull origin main --allow-unrelated-histories 2>/dev/null; then
-        echo "Data pulled successfully from GitHub."
+    echo "[ENTRYPOINT] Pulling from GitHub..."
+    if git pull origin main --allow-unrelated-histories 2>&1; then
+        echo "[ENTRYPOINT] ✅ Pull successful"
     else
-        echo "No remote data found or pull failed. Starting fresh."
-        # Create initial commit if remote is empty
-        touch "$HERMES_DIR/.keep"
+        echo "[ENTRYPOINT] ⚠️ Pull failed - starting fresh"
+        touch .keep
         git add .
-        git commit -m "Initial commit from Docker entrypoint" 2>/dev/null || true
-        git push -u origin main 2>/dev/null || true
+        git commit -m "Initial commit" 2>/dev/null || true
+        git branch -M main
+        git push -u origin main 2>&1 || echo "[ENTRYPOINT] ❌ Initial push failed"
     fi
 else
-    echo "WARNING: GITHUB_TOKEN or GITHUB_REPO not set. Data will NOT be persisted to GitHub!"
+    echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
+    echo "[ENTRYPOINT] Data will NOT persist!"
+fi
+
+# Cleanup incompatible state.db
+if [ -f "$HERMES_DIR/state.db" ]; then
+    if ! sqlite3 "$HERMES_DIR/state.db" "SELECT source FROM sessions LIMIT 1" 2>/dev/null; then
+        mv "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.bak.$(date +%s)"
+        echo "[ENTRYPOINT] Archived incompatible state.db"
+    fi
 fi
 
 echo "=========================================="
-echo " Starting background sync script..."
+echo "[ENTRYPOINT] Starting sync.sh in background..."
 echo "=========================================="
 
-# Start sync script in background
-/app/sync.sh &
+# 🔥 اجرای sync.sh با خروجی به stdout (نه فایل)
+/app/sync.sh 2>&1 &
+SYNC_PID=$!
+echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
+
+# Wait a bit to see if sync starts
+sleep 2
+if kill -0 $SYNC_PID 2>/dev/null; then
+    echo "[ENTRYPOINT] ✅ sync.sh is running"
+else
+    echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
+fi
 
 echo "=========================================="
-echo " Starting Hermes WebUI..."
+echo "[ENTRYPOINT] Starting Hermes WebUI..."
 echo "=========================================="
 
-# Set environment variables for WebUI
 export HERMES_HOME="$HERMES_DIR"
 export HERMES_WEBUI_STATE_DIR="$HERMES_DIR/webui"
 export HERMES_WEBUI_AGENT_DIR="/app/hermes-agent"
 export HERMES_WEBUI_HOST="${HERMES_WEBUI_HOST:-0.0.0.0}"
 export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 
-# Change to WebUI directory and start server
-cd /app/hermes-webui
+# Graceful shutdown
+cleanup() {
+    echo ""
+    echo "[ENTRYPOINT] Shutting down - forcing final sync..."
+    kill $SYNC_PID 2>/dev/null || true
+    cd "$HERMES_DIR"
+    if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+        git add -A
+        git commit -m "sync: shutdown" 2>/dev/null || true
+        git push origin main 2>&1 || true
+        echo "[ENTRYPOINT] ✅ Final sync done"
+    fi
+    exit 0
+}
 
-# Use server.py directly
-exec python server.py
+trap cleanup SIGTERM SIGINT SIGQUIT
+
+cd /app/hermes-webui
+exec python server.py 2>&1 | grep -v "state.db" | grep -v "agent session listing skipped"
