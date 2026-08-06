@@ -5,35 +5,39 @@ echo "=========================================="
 echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
+# ============================================================
 # Git Configuration
+# ============================================================
 git config --global user.email "hermes-bot@example.com"
 git config --global user.name "Hermes Bot"
 git config --global init.defaultBranch main
 git config --global pull.rebase false
+git config --global advice.detachedHead false
 
 # ============================================================
-# Directory Setup - EVERYTHING under /data/.hermes
+# Directory Setup
 # ============================================================
 DATA_DIR="/data"
 HERMES_DIR="$DATA_DIR/.hermes"
 HERMES_SOURCE="/app/hermes-agent"
 
-# Create ALL necessary directories
 mkdir -p "$HERMES_DIR"
 mkdir -p "$HERMES_DIR/webui/sessions"
 mkdir -p "$HERMES_DIR/skills"
 mkdir -p "$HERMES_DIR/plans"
-mkdir -p "$HERMES_DIR/workspace"  # 🔥 Workspace here now!
+mkdir -p "$HERMES_DIR/workspace"
 mkdir -p "$HERMES_DIR/profiles"
 mkdir -p "$HERMES_DIR/crons"
 mkdir -p "$HERMES_DIR/cache"
 
 echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
-echo "[ENTRYPOINT] WORKSPACE: $HERMES_DIR/workspace"
+echo "[ENTRYPOINT] HERMES_SOURCE: $HERMES_SOURCE"
 echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
 echo "[ENTRYPOINT] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
 
+# ============================================================
 # Portable file size function
+# ============================================================
 get_file_size() {
     if [ -f "$1" ]; then
         stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo "0"
@@ -42,7 +46,9 @@ get_file_size() {
     fi
 }
 
+# ============================================================
 # Git Initialization
+# ============================================================
 cd "$HERMES_DIR"
 
 if [ ! -d ".git" ]; then
@@ -68,11 +74,12 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
         echo "[ENTRYPOINT] ✅ Fetch successful"
         
         if git rev-parse --verify origin/main >/dev/null 2>&1; then
-            # Save current state before reset
+            # Save current state.db before reset (in case it has new data)
             if [ -f "$HERMES_DIR/state.db" ]; then
                 CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
                 if [ "$CURRENT_SIZE" -gt 1000 ]; then
                     cp "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.pre-reset.$(date +%s)" 2>/dev/null || true
+                    echo "[ENTRYPOINT] Saved current state.db as backup"
                 fi
             fi
             
@@ -84,37 +91,24 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
             echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
         else
             echo "[ENTRYPOINT] ⚠️ No remote branch - starting fresh"
-            
-            # Create .gitignore with MINIMAL exclusions
             cat > .gitignore <<'EOF'
-# Security (DO NOT sync secrets)
 *.key
 *.pem
 .env
 .env.*
-
-# Python cache
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-
-# Temporary files
 *.tmp
 *.log
 *.journal
 state.db-journal
 state.db-wal
-
-# Node
 node_modules/
 .DS_Store
-
-# Backup files (auto-cleaned)
 *.pre-reset.*
 state.db.bak.*
 EOF
-            
             touch .keep
             git add -A
             git commit -m "Initial commit" 2>/dev/null || true
@@ -125,7 +119,7 @@ EOF
         echo "[ENTRYPOINT] ⚠️ Fetch failed - using local data"
     fi
     
-    # Restore state.db from largest backup
+    # Restore state.db from largest backup if current is small
     if [ -f "$HERMES_DIR/state.db" ]; then
         CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
         if [ "$CURRENT_SIZE" -lt 1000 ]; then
@@ -143,7 +137,9 @@ else
     echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
 fi
 
+# ============================================================
 # Create .gitignore if missing
+# ============================================================
 if [ ! -f ".gitignore" ]; then
     cat > .gitignore <<'EOF'
 *.key
@@ -163,6 +159,70 @@ node_modules/
 *.pre-reset.*
 state.db.bak.*
 EOF
+    echo "[ENTRYPOINT] .gitignore created"
+fi
+
+# ============================================================
+# 🔥 COPY ALL BUNDLED SKILLS (72 skills)
+# Source: /app/hermes-agent/skills/
+# ============================================================
+echo "=========================================="
+echo "[SKILLS] Copying ALL bundled skills..."
+echo "[SKILLS] Source: $HERMES_SOURCE/skills/"
+echo "=========================================="
+
+if [ -d "$HERMES_SOURCE/skills" ]; then
+    BEFORE_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
+    
+    # List bundled categories
+    echo "[SKILLS] Bundled categories found:"
+    ls -1 "$HERMES_SOURCE/skills/" 2>/dev/null | while read category; do
+        if [ -d "$HERMES_SOURCE/skills/$category" ]; then
+            echo "[SKILLS]   - $category"
+            cp -r "$HERMES_SOURCE/skills/$category" "$HERMES_DIR/skills/" 2>/dev/null || true
+        fi
+    done
+    
+    AFTER_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
+    NEW_COUNT=$((AFTER_COUNT - BEFORE_COUNT))
+    
+    echo "[SKILLS] ✅ Bundled skills: $AFTER_COUNT total ($NEW_COUNT new)"
+else
+    echo "[SKILLS] ❌ ERROR: Bundled skills directory not found!"
+    echo "[SKILLS] Listing $HERMES_SOURCE contents:"
+    ls -la "$HERMES_SOURCE/" 2>/dev/null | head -20
+fi
+
+# ============================================================
+# 🔥 COPY ALL OPTIONAL SKILLS (129 skills)
+# Source: /app/hermes-agent/optional-skills/
+# ============================================================
+echo "=========================================="
+echo "[SKILLS] Copying ALL optional skills..."
+echo "[SKILLS] Source: $HERMES_SOURCE/optional-skills/"
+echo "=========================================="
+
+if [ -d "$HERMES_SOURCE/optional-skills" ]; then
+    BEFORE_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
+    
+    # List optional categories
+    echo "[SKILLS] Optional categories found:"
+    ls -1 "$HERMES_SOURCE/optional-skills/" 2>/dev/null | while read category; do
+        if [ -d "$HERMES_SOURCE/optional-skills/$category" ]; then
+            echo "[SKILLS]   - $category"
+            cp -r "$HERMES_SOURCE/optional-skills/$category" "$HERMES_DIR/skills/" 2>/dev/null || true
+        fi
+    done
+    
+    AFTER_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
+    NEW_COUNT=$((AFTER_COUNT - BEFORE_COUNT))
+    
+    echo "[SKILLS] ✅ Optional skills added: $NEW_COUNT new"
+    echo "[SKILLS] ✅ Total skills now: $AFTER_COUNT"
+else
+    echo "[SKILLS] ⚠️ Optional skills directory not found at $HERMES_SOURCE/optional-skills"
+    echo "[SKILLS] Listing $HERMES_SOURCE contents:"
+    ls -la "$HERMES_SOURCE/" 2>/dev/null | head -20
 fi
 
 # ============================================================
@@ -176,87 +236,6 @@ if [ -d "/root/workspace" ]; then
 fi
 
 # ============================================================
-# COPY ALL BUNDLED SKILLS from Hermes Source
-# ============================================================
-echo "=========================================="
-echo "[SKILLS] Copying ALL bundled skills from source..."
-echo "=========================================="
-
-if [ -d "$HERMES_SOURCE/skills" ]; then
-    mkdir -p "$HERMES_DIR/skills"
-    
-    BEFORE_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 2 -name "SKILL.md" 2>/dev/null | wc -l)
-    
-    cp -r "$HERMES_SOURCE/skills/"* "$HERMES_DIR/skills/" 2>/dev/null || true
-    
-    AFTER_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 2 -name "SKILL.md" 2>/dev/null | wc -l)
-    NEW_COUNT=$((AFTER_COUNT - BEFORE_COUNT))
-    
-    echo "[SKILLS] ✅ Copied ALL bundled skills: $AFTER_COUNT total ($NEW_COUNT new)"
-else
-    echo "[SKILLS] ⚠️ Source skills directory not found"
-fi
-
-# ============================================================
-# INSTALL ALL OPTIONAL SKILLS from Skills Hub
-# ============================================================
-install_all_optional_skills() {
-    SKILLS_FILE="/app/skills.txt"
-    
-    if [ ! -f "$SKILLS_FILE" ]; then
-        echo "[SKILLS] ⚠️ skills.txt not found"
-        return
-    fi
-    
-    echo "=========================================="
-    echo "[SKILLS] Installing ALL optional skills from Hub..."
-    echo "=========================================="
-    
-    HERMES_VENV="/app/hermes-agent/.venv"
-    if [ -f "$HERMES_VENV/bin/activate" ]; then
-        source "$HERMES_VENV/bin/activate"
-    fi
-    
-    export HERMES_HOME="$HERMES_DIR"
-    
-    INSTALLED=0
-    SKIPPED=0
-    FAILED=0
-    TOTAL_ATTEMPTED=0
-    
-    while IFS= read -r skill; do
-        [[ -z "$skill" || "$skill" =~ ^[[:space:]]*# ]] && continue
-        skill=$(echo "$skill" | xargs)
-        
-        TOTAL_ATTEMPTED=$((TOTAL_ATTEMPTED + 1))
-        
-        if [ -d "$HERMES_DIR/skills/$skill" ] || [ -f "$HERMES_DIR/skills/$skill/SKILL.md" ]; then
-            SKIPPED=$((SKIPPED + 1))
-            continue
-        fi
-        
-        echo "[SKILLS #$TOTAL_ATTEMPTED] Installing: $skill"
-        
-        if timeout 30 hermes skill install "$skill" 2>/dev/null; then
-            INSTALLED=$((INSTALLED + 1))
-        else
-            FAILED=$((FAILED + 1))
-            echo "[SKILLS #$TOTAL_ATTEMPTED] ⚠️ Failed: $skill (continuing...)"
-        fi
-    done < "$SKILLS_FILE"
-    
-    echo "=========================================="
-    echo "[SKILLS] Installation Summary:"
-    echo "[SKILLS]   Total attempted: $TOTAL_ATTEMPTED"
-    echo "[SKILLS]   Installed: $INSTALLED"
-    echo "[SKILLS]   Skipped: $SKIPPED"
-    echo "[SKILLS]   Failed: $FAILED"
-    echo "=========================================="
-}
-
-install_all_optional_skills
-
-# ============================================================
 # Final State Summary
 # ============================================================
 echo "=========================================="
@@ -265,11 +244,15 @@ echo "=========================================="
 
 if [ -f "$HERMES_DIR/state.db" ]; then
     FINAL_SIZE=$(get_file_size "$HERMES_DIR/state.db")
-    echo "[ENTRYPOINT] state.db size: $FINAL_SIZE bytes"
+    echo "[ENTRYPOINT] state.db: $FINAL_SIZE bytes"
 fi
 
-SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 2 -name "SKILL.md" 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Total skills installed: $SKILL_COUNT"
+SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] Total skills: $SKILL_COUNT"
+
+# List all skill categories
+echo "[ENTRYPOINT] Skill categories installed:"
+ls -1 "$HERMES_DIR/skills/" 2>/dev/null | grep -v "^$" | sort
 
 MEMORY_COUNT=$(ls "$HERMES_DIR"/MEMORY.md "$HERMES_DIR"/USER.md "$HERMES_DIR"/SOUL.md 2>/dev/null | wc -l)
 echo "[ENTRYPOINT] Core files (MEMORY/USER/SOUL): $MEMORY_COUNT"
@@ -279,6 +262,10 @@ echo "[ENTRYPOINT] WebUI files: $WEBUI_FILES"
 
 WORKSPACE_FILES=$(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)
 echo "[ENTRYPOINT] Workspace files: $WORKSPACE_FILES"
+
+# Count all files that will be synced
+TOTAL_FILES=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] Total files to sync: $TOTAL_FILES"
 
 echo "=========================================="
 
@@ -298,26 +285,31 @@ else
 fi
 
 # ============================================================
-# 🔥 Set Environment Variables - ALL paths to /data/.hermes
+# Set Environment Variables
 # ============================================================
 export HERMES_HOME="$HERMES_DIR"
 export HERMES_WEBUI_STATE_DIR="$HERMES_DIR/webui"
 export HERMES_WEBUI_AGENT_DIR="/app/hermes-agent"
 export HERMES_WEBUI_HOST="${HERMES_WEBUI_HOST:-0.0.0.0}"
 export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
-
-# 🔥 CRITICAL: Redirect workspace to /data/.hermes/workspace
 export HERMES_WORKSPACE="$HERMES_DIR/workspace"
 export HERMES_WEBUI_DEFAULT_WORKSPACE="$HERMES_DIR/workspace"
 
 echo "[ENTRYPOINT] HERMES_HOME: $HERMES_HOME"
 echo "[ENTRYPOINT] HERMES_WEBUI_STATE_DIR: $HERMES_WEBUI_STATE_DIR"
 echo "[ENTRYPOINT] HERMES_WORKSPACE: $HERMES_WORKSPACE"
+echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
+echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
 
+# ============================================================
 # Graceful Shutdown Handler
+# ============================================================
 cleanup() {
     echo ""
+    echo "=========================================="
     echo "[ENTRYPOINT] Shutting down - forcing final sync..."
+    echo "=========================================="
+    
     kill $SYNC_PID 2>/dev/null || true
     wait $SYNC_PID 2>/dev/null || true
     
@@ -335,7 +327,9 @@ cleanup() {
 
 trap cleanup SIGTERM SIGINT SIGQUIT SIGHUP
 
+# ============================================================
 # Start WebUI
+# ============================================================
 echo "=========================================="
 echo "[ENTRYPOINT] Starting Hermes WebUI..."
 echo "=========================================="
