@@ -19,57 +19,59 @@ mkdir -p "$HERMES_DIR/skills"
 echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
 echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
 
-# Init git
-if [ ! -d "$HERMES_DIR/.git" ]; then
-    echo "[ENTRYPOINT] Initializing git..."
-    cd "$HERMES_DIR"
-    git init
-    
-    cat > .gitignore <<'EOF'
-*.key
-*.pem
-.env
-__pycache__/
-*.pyc
-*.pyo
-*.tmp
-*.journal
-state.db-journal
-state.db-wal
-node_modules/
-EOF
-    
-    git add .gitignore
-    git commit -m "Initial setup" 2>/dev/null || true
-fi
-
 cd "$HERMES_DIR"
 
-# Setup remote
+# 🔥 استراتژی جدید: همیشه از remote شروع کن
 if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
     echo "[ENTRYPOINT] Setting up GitHub remote..."
     REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
     
+    # اگر git repo وجود ندارد، init کن
+    if [ ! -d ".git" ]; then
+        echo "[ENTRYPOINT] Initializing new git repo..."
+        git init
+    fi
+    
+    # remote را تنظیم کن
     if git remote get-url origin >/dev/null 2>&1; then
         git remote set-url origin "$REMOTE_URL"
     else
         git remote add origin "$REMOTE_URL"
     fi
     
-    echo "[ENTRYPOINT] Pulling from GitHub..."
-    if git pull origin main --allow-unrelated-histories 2>&1; then
-        echo "[ENTRYPOINT] ✅ Pull successful"
+    # 🔥 مرحله حیاتی: fetch و reset به remote
+    echo "[ENTRYPOINT] Fetching from GitHub..."
+    if git fetch origin main 2>&1; then
+        echo "[ENTRYPOINT] ✅ Fetch successful"
+        
+        # بررسی کن آیا remote branch وجود دارد
+        if git rev-parse origin/main >/dev/null 2>&1; then
+            echo "[ENTRYPOINT] Resetting to origin/main..."
+            # 🔥 force reset به remote (همه تغییرات local را از بین می‌برد)
+            git reset --hard origin/main 2>&1 || echo "[ENTRYPOINT] ⚠️ Reset warning"
+            git clean -fd 2>&1 || true
+            echo "[ENTRYPOINT] ✅ Data restored from GitHub"
+        else
+            echo "[ENTRYPOINT] ⚠️ No remote data - starting fresh"
+            touch .keep
+            git add .
+            git commit -m "Initial commit" 2>/dev/null || true
+        fi
     else
-        echo "[ENTRYPOINT] ⚠️ Pull failed - starting fresh"
+        echo "[ENTRYPOINT] ⚠️ Fetch failed - starting fresh"
+        if [ ! -d ".git" ]; then
+            git init
+        fi
         touch .keep
         git add .
         git commit -m "Initial commit" 2>/dev/null || true
-        git branch -M main
-        git push -u origin main 2>&1 || echo "[ENTRYPOINT] ❌ Initial push failed"
     fi
 else
     echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
     echo "[ENTRYPOINT] Data will NOT persist!"
+    if [ ! -d ".git" ]; then
+        git init
+    fi
 fi
 
 # Cleanup incompatible state.db
@@ -84,12 +86,10 @@ echo "=========================================="
 echo "[ENTRYPOINT] Starting sync.sh in background..."
 echo "=========================================="
 
-# 🔥 اجرای sync.sh با خروجی به stdout (نه فایل)
 /app/sync.sh 2>&1 &
 SYNC_PID=$!
 echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
 
-# Wait a bit to see if sync starts
 sleep 2
 if kill -0 $SYNC_PID 2>/dev/null; then
     echo "[ENTRYPOINT] ✅ sync.sh is running"
@@ -107,7 +107,6 @@ export HERMES_WEBUI_AGENT_DIR="/app/hermes-agent"
 export HERMES_WEBUI_HOST="${HERMES_WEBUI_HOST:-0.0.0.0}"
 export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 
-# Graceful shutdown
 cleanup() {
     echo ""
     echo "[ENTRYPOINT] Shutting down - forcing final sync..."
@@ -116,7 +115,7 @@ cleanup() {
     if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
         git add -A
         git commit -m "sync: shutdown" 2>/dev/null || true
-        git push origin main 2>&1 || true
+        git push --force origin main 2>&1 || true
         echo "[ENTRYPOINT] ✅ Final sync done"
     fi
     exit 0
