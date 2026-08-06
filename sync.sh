@@ -3,6 +3,7 @@
 DATA_DIR="/data"
 HERMES_DIR="$DATA_DIR/.hermes"
 SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
+MAX_BACKUPS=3  # حداکثر 3 بکاپ نگه می‌دارد
 
 echo "=========================================="
 echo "[SYNC] Started at $(date)"
@@ -21,10 +22,17 @@ while true; do
     if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
         if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
             echo "[SYNC #$counter] Changes detected. Committing..."
+            
+            # Cleanup old backups (keep only MAX_BACKUPS)
+            BACKUP_COUNT=$(ls -1 state.db.bak.* 2>/dev/null | wc -l)
+            if [ "$BACKUP_COUNT" -gt "$MAX_BACKUPS" ]; then
+                echo "[SYNC #$counter] Cleaning up old backups (keeping $MAX_BACKUPS)..."
+                ls -1t state.db.bak.* | tail -n +$((MAX_BACKUPS + 1)) | xargs -r rm -f
+            fi
+            
             git add -A
             git commit -m "sync #$counter @ $(date '+%H:%M:%S')" >/dev/null 2>&1
             
-            # 🔥 force push (چون این repo فقط برای sync است)
             echo "[SYNC #$counter] Force pushing to ${GITHUB_REPO}..."
             PUSH_OUTPUT=$(git push --force origin main 2>&1)
             PUSH_STATUS=$?
