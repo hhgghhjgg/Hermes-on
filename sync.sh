@@ -2,28 +2,39 @@
 
 DATA_DIR="/data"
 HERMES_DIR="$DATA_DIR/.hermes"
-SYNC_INTERVAL="${SYNC_INTERVAL:-180}"  # Default: 3 minutes
+SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
 
-echo "Sync script started. Interval: ${SYNC_INTERVAL}s"
+# 🔥 لاگ به stdout (نه فایل) تا در Render Logs دیده شود
+echo "=========================================="
+echo "[SYNC] Started at $(date)"
+echo "[SYNC] Interval: ${SYNC_INTERVAL}s"
+echo "[SYNC] GitHub Repo: ${GITHUB_REPO:-NOT SET}"
+echo "[SYNC] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
+echo "=========================================="
 
-cd "$HERMES_DIR"
+cd "$HERMES_DIR" || { echo "[SYNC] ERROR: Cannot cd to $HERMES_DIR"; exit 1; }
 
+counter=0
 while true; do
     sleep "$SYNC_INTERVAL"
+    counter=$((counter + 1))
     
     if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
-        # Check if there are changes
-        if [[ -n $(git status --porcelain) ]]; then
-            echo "[$(date)] Changes detected. Committing and pushing..."
+        if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+            echo "[SYNC #$counter] Changes detected. Committing..."
             git add -A
-            git commit -m "Auto-sync: $(date '+%Y-%m-%d %H:%M:%S')"
-            git push origin main
-            echo "[$(date)] Sync completed."
+            git commit -m "sync #$counter @ $(date '+%H:%M:%S')" >/dev/null 2>&1
+            
+            if timeout 60 git push origin main >/dev/null 2>&1; then
+                echo "[SYNC #$counter] ✅ Pushed to GitHub"
+            else
+                echo "[SYNC #$counter] ❌ Push FAILED"
+            fi
         else
-            echo "[$(date)] No changes to sync."
+            echo "[SYNC #$counter] ✓ No changes"
         fi
     else
-        echo "[$(date)] GITHUB_TOKEN or GITHUB_REPO not set. Skipping sync."
-        sleep 300
+        echo "[SYNC #$counter] ⚠️ GITHUB_TOKEN or GITHUB_REPO missing!"
+        sleep 60
     fi
 done
