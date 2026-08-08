@@ -1,9 +1,4 @@
 #!/bin/bash
-set -e
-
-echo "=========================================="
-echo "[ENTRYPOINT] Started at $(date)"
-echo "=========================================="
 
 # ============================================================
 # Git Configuration
@@ -37,25 +32,17 @@ echo "[ENTRYPOINT] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
 echo "[ENTRYPOINT] OMNIROUTE_URL: ${OMNIROUTE_URL:-NOT SET}"
 
 # ============================================================
-# Portable file size function
+# Helper Function: get_file_size
 # ============================================================
 get_file_size() {
-    if [ -f "$1" ]; then
-        stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo "0"
+    local file="$1"
+    if [ -f "$file" ]; then
+        local size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null || echo 0)
+        echo "$size"
     else
-        echo "0"
+        echo 0
     fi
 }
-
-# ============================================================
-# Git Initialization
-# ============================================================
-cd "$HERMES_DIR"
-
-if [ ! -d ".git" ]; then
-    echo "[ENTRYPOINT] Initializing new git repo..."
-    git init -b main
-fi
 
 # ============================================================
 # RESTORE EVERYTHING from GitHub
@@ -227,16 +214,6 @@ else
 fi
 
 # ============================================================
-# 🔥 COPY OLD WORKSPACE DATA if exists
-# ============================================================
-if [ -d "/root/workspace" ]; then
-    echo "[ENTRYPOINT] Migrating old workspace to new location..."
-    cp -r /root/workspace/* "$HERMES_DIR/workspace/" 2>/dev/null || true
-    cp -r /root/workspace/.* "$HERMES_DIR/workspace/" 2>/dev/null || true
-    echo "[ENTRYPOINT] ✅ Workspace migrated"
-fi
-
-# ============================================================
 # 🔥 GENERATE config.yaml → Connect Hermes to OmniRoute
 # ============================================================
 echo "=========================================="
@@ -245,9 +222,13 @@ echo "[CONFIG] OMNIROUTE_URL: ${OMNIROUTE_URL}"
 echo "=========================================="
 
 # Use OMNIROUTE_URL from env, fallback to default
-OMNI_URL="${OMNIROUTE_URL:-https://omniroute-app.onrender.com}"
+OMNI_URL="${OMNIROUTE_URL:-https://omniroute-app-production-9940.up.railway.app}"
 OMNI_API_URL="${OMNI_URL}/v1"
 
+# API Key - Read from environment variable (fallback to hardcoded)
+OMNI_API_KEY="${OMNIROUTE_API_KEY:-sk-7150f73b0efb9f5e-d0a99b-0c5675aa}"
+
+# Generate config.yaml with correct format for Hermes WebUI
 cat > "$HERMES_DIR/config.yaml" <<EOF
 # ============================================================
 # Hermes Agent Configuration
@@ -259,13 +240,14 @@ cat > "$HERMES_DIR/config.yaml" <<EOF
 providers:
   omniroute:
     api: ${OMNI_API_URL}
+    api_key: ${OMNI_API_KEY}
     transport: chat_completions
-    default_model: auto
+    default_model: hermes-fast
     enabled: true
 
 # Model configuration
 model:
-  default: ${HERMES_WEBUI_DEFAULT_MODEL:-auto}
+  default: ${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}
   provider: custom:omniroute
 
 # Workspace configuration
@@ -288,99 +270,8 @@ EOF
 echo "[CONFIG] ✅ config.yaml written"
 echo "[CONFIG]   Provider: omniroute"
 echo "[CONFIG]   API: ${OMNI_API_URL}"
-echo "[CONFIG]   Model: ${HERMES_WEBUI_DEFAULT_MODEL:-auto}"
-
-# ============================================================
-# Final State Summary
-# ============================================================
-echo "=========================================="
-echo "[ENTRYPOINT] Final state summary:"
-echo "=========================================="
-
-if [ -f "$HERMES_DIR/state.db" ]; then
-    FINAL_SIZE=$(get_file_size "$HERMES_DIR/state.db")
-    echo "[ENTRYPOINT] state.db: $FINAL_SIZE bytes"
-fi
-
-SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Total skills: $SKILL_COUNT"
-
-# List all skill categories
-echo "[ENTRYPOINT] Skill categories installed:"
-ls -1 "$HERMES_DIR/skills/" 2>/dev/null | grep -v "^$" | sort
-
-MEMORY_COUNT=$(ls "$HERMES_DIR"/MEMORY.md "$HERMES_DIR"/USER.md "$HERMES_DIR"/SOUL.md 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Core files (MEMORY/USER/SOUL): $MEMORY_COUNT"
-
-WEBUI_FILES=$(find "$HERMES_DIR/webui" -type f 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] WebUI files: $WEBUI_FILES"
-
-WORKSPACE_FILES=$(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Workspace files: $WORKSPACE_FILES"
-
-# Count all files that will be synced
-TOTAL_FILES=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Total files to sync: $TOTAL_FILES"
-
-echo "=========================================="
-
-# ============================================================
-# Start Background Sync
-# ============================================================
-echo "[ENTRYPOINT] Starting sync.sh in background..."
-/app/sync.sh 2>&1 &
-SYNC_PID=$!
-echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
-
-sleep 2
-if kill -0 $SYNC_PID 2>/dev/null; then
-    echo "[ENTRYPOINT] ✅ sync.sh is running"
-else
-    echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
-fi
-
-# ============================================================
-# Set Environment Variables
-# ============================================================
-export HERMES_HOME="$HERMES_DIR"
-export HERMES_WEBUI_STATE_DIR="$HERMES_DIR/webui"
-export HERMES_WEBUI_AGENT_DIR="/app/hermes-agent"
-export HERMES_WEBUI_HOST="${HERMES_WEBUI_HOST:-0.0.0.0}"
-export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
-export HERMES_WORKSPACE="$HERMES_DIR/workspace"
-export HERMES_WEBUI_DEFAULT_WORKSPACE="$HERMES_DIR/workspace"
-
-echo "[ENTRYPOINT] HERMES_HOME: $HERMES_HOME"
-echo "[ENTRYPOINT] HERMES_WEBUI_STATE_DIR: $HERMES_WEBUI_STATE_DIR"
-echo "[ENTRYPOINT] HERMES_WORKSPACE: $HERMES_WORKSPACE"
-echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
-echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
-
-# ============================================================
-# Graceful Shutdown Handler
-# ============================================================
-cleanup() {
-    echo ""
-    echo "=========================================="
-    echo "[ENTRYPOINT] Shutting down - forcing final sync..."
-    echo "=========================================="
-    
-    kill $SYNC_PID 2>/dev/null || true
-    wait $SYNC_PID 2>/dev/null || true
-    
-    cd "$HERMES_DIR"
-    if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
-        echo "[ENTRYPOINT] Committing final changes (ALL data)..."
-        git add -A
-        git commit -m "sync: final shutdown @ $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null || true
-        git push --force origin main 2>&1 || true
-        echo "[ENTRYPOINT] ✅ Final sync completed"
-    fi
-    
-    exit 0
-}
-
-trap cleanup SIGTERM SIGINT SIGQUIT SIGHUP
+echo "[CONFIG]   Model: ${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}"
+echo "[CONFIG]   API Key: ***"
 
 # ============================================================
 # Start WebUI
