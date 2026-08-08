@@ -46,7 +46,7 @@ ENV HERMES_WEBUI_HOST=0.0.0.0
 ENV HERMES_WEBUI_PORT=8787
 
 # OmniRoute external URL (set in Render Environment Variables)
-ENV OMNIROUTE_URL=https://omniroute-app.onrender.com
+ENV OMNIROUTE_URL=https://omniroute-app-production-9940.up.railway.app
 
 # Expose WebUI port only
 EXPOSE 8787
