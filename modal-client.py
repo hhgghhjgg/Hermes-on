@@ -633,7 +633,7 @@ def main():
     
     # Initialize Modal App
     try:
-        app = get_modal_app()
+        app_modal = get_modal_app()
         print(f"[MODAL-CLIENT] ✅ Modal App ready: hermes-sandboxes")
     except Exception as e:
         print(f"[MODAL-CLIENT] ❌ Failed to initialize Modal: {e}")
@@ -644,8 +644,8 @@ def main():
     print(f"[MODAL-CLIENT] ✅ Starting server on {FLASK_HOST}:{FLASK_PORT}")
     print("=" * 60)
     
-    # Run Flask server
-    flask_app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)
+    # 🔥 FIXED: Use the Flask app instance
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)
 
 
 if __name__ == "__main__":
