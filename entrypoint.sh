@@ -535,5 +535,16 @@ echo "=========================================="
 echo "[ENTRYPOINT] Starting Hermes WebUI..."
 echo "=========================================="
 
-cd /app/hermes-webui
+# 🔥 FIXED: WebUI is cloned to /app/webui (not /app/hermes-webui)
+cd /app/webui || exit 1
+
+# Verify server.py exists
+if [ ! -f "server.py" ]; then
+    echo "[ENTRYPOINT] ❌ server.py not found in /app/webui!"
+    echo "[ENTRYPOINT]    Listing contents:"
+    ls -la /app/webui/ | head -20
+    exit 1
+fi
+
+echo "[ENTRYPOINT] ✅ Found server.py in /app/webui"
 exec python server.py 2>&1 | grep -v "agent session listing skipped" | grep -v "Token from GITHUB_TOKEN is not supported" | grep -v "Slow WebUI request" | grep -v "live provider-catalog rebuild exceeded"
