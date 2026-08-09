@@ -1,34 +1,27 @@
 # ============================================================
 # Hermes Agent - Docker Image with Modal Sandbox Support
 # ============================================================
-# This image provides:
-#   - Hermes Agent (core AI agent)
-#   - Hermes WebUI (web interface from nesquena/hermes-webui)
-#   - Qwen OAuth Proxy (port 8080)
-#   - Modal Client API (port 8090)
-#   - Git sync with Hermes-pre repository
+# 🔥 FIX: WebUI now runs on port 8080 (Render's default port)
+# 🔥 Qwen Proxy is DISABLED (replaced with dummy script)
 # ============================================================
 
 FROM python:3.11-slim
 
 # ------------------------------------------------------------
 # Environment variables
-# PYTHONUNBUFFERED: real-time logs for Render
-# PYTHONDONTWRITEBYTECODE: prevent .pyc files
-# PIP_NO_CACHE_DIR: smaller image size
-# MODAL_ENVIRONMENT: default Modal environment (main)
+# HERMES_WEBUI_PORT=8080: WebUI on Render's default port
+# QWEN_PROXY_PORT=8081: Qwen Proxy (disabled anyway)
 # ------------------------------------------------------------
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
-    MODAL_ENVIRONMENT=main
+    MODAL_ENVIRONMENT=main \
+    HERMES_WEBUI_PORT=8080 \
+    HERMES_WEBUI_HOST=0.0.0.0
 
 # ------------------------------------------------------------
 # System dependencies
-# git: required for sync.sh and FULL RESTORE from Hermes-pre
-# curl/wget/unzip: general utilities
-# ca-certificates: HTTPS support
 # ------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -42,13 +35,12 @@ WORKDIR /app
 
 # ------------------------------------------------------------
 # Clone hermes-agent and hermes-webui
-# NOTE: WebUI is now at nesquena/hermes-webui (not NousResearch)
 # ------------------------------------------------------------
 RUN git clone https://github.com/NousResearch/hermes-agent.git /app/hermes-agent \
     && git clone https://github.com/nesquena/hermes-webui.git /app/webui
 
 # ------------------------------------------------------------
-# Install hermes-agent (editable mode for development)
+# Install hermes-agent
 # ------------------------------------------------------------
 WORKDIR /app/hermes-agent
 RUN pip install --no-cache-dir -e .
@@ -60,63 +52,54 @@ WORKDIR /app/webui
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ------------------------------------------------------------
-# Install Hermes-on requirements
-# Includes:
-#   - flask, requests (for qwen-proxy.py)
-#   - modal>=0.73.0 (for modal-client.py)
+# Install required packages
 # ------------------------------------------------------------
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+WORKDIR /app
+RUN pip install --no-cache-dir \
+    "flask>=3.0.0" \
+    "requests>=2.31.0" \
+    "modal>=0.73.0"
 
 # ------------------------------------------------------------
 # Copy operational scripts
-# sync.sh: background sync to Hermes-pre GitHub repo
-# entrypoint.sh: startup script with FULL RESTORE
-# qwen-proxy.py: OAuth proxy for Qwen models
-# modal-client.py: Modal Sandbox API server
 # ------------------------------------------------------------
 COPY sync.sh /app/sync.sh
 COPY entrypoint.sh /app/entrypoint.sh
-COPY qwen-proxy.py /app/qwen-proxy.py
 COPY modal-client.py /app/modal-client.py
 
 RUN chmod +x /app/sync.sh /app/entrypoint.sh
 
 # ------------------------------------------------------------
+# 🔥 QWEN PROXY IS DEPRECATED - Create dummy script
+# This replaces qwen-proxy.py with a script that does nothing
+# so it doesn't conflict with WebUI on port 8080
+# ------------------------------------------------------------
+RUN printf '#!/usr/bin/env python3\nimport time\nprint("[QWEN] Deprecated - doing nothing")\nwhile True: time.sleep(3600)\n' > /app/qwen-proxy.py
+
+# ------------------------------------------------------------
 # Modal SDK config directory
-# (Tokens are read from Environment Variables, no file needed)
 # ------------------------------------------------------------
 RUN mkdir -p /root/.modal
 
 # ------------------------------------------------------------
-# Workspace directory (where Hermes works)
+# Workspace directory
 # ------------------------------------------------------------
 RUN mkdir -p /workspace
 WORKDIR /workspace
 
 # ------------------------------------------------------------
-# Ports
-# 8787: Hermes WebUI (main web interface)
-# 8080: Qwen OAuth Proxy (API gateway for Qwen models)
-# 8090: Modal Client API (internal use by Hermes)
-#       Note: 8090 is internal only, not exposed to public
+# 🔥 ONLY EXPOSE PORT 8080 (WebUI)
+# 8081 and 8090 are internal, not exposed
 # ------------------------------------------------------------
-EXPOSE 8787 8080
+EXPOSE 8080
 
 # ------------------------------------------------------------
-# Health check (optional but recommended)
+# Health check
 # ------------------------------------------------------------
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8787/ || exit 1
+    CMD curl -f http://localhost:8080/ || exit 1
 
 # ------------------------------------------------------------
 # Entry point
-# entrypoint.sh handles:
-#   1. Git configuration
-#   2. Modal configuration
-#   3. FULL RESTORE from Hermes-pre
-#   4. Skills installation (72 bundled + 129 optional)
-#   5. config.yaml generation
-#   6. Starting sync.sh, Qwen Proxy, Modal Client, WebUI
 # ------------------------------------------------------------
 ENTRYPOINT ["/app/entrypoint.sh"]
