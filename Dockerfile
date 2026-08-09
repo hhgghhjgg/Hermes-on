@@ -3,7 +3,7 @@
 # ============================================================
 # This image provides:
 #   - Hermes Agent (core AI agent)
-#   - Hermes WebUI (web interface)
+#   - Hermes WebUI (web interface from nesquena/hermes-webui)
 #   - Qwen OAuth Proxy (port 8080)
 #   - Modal Client API (port 8090)
 #   - Git sync with Hermes-pre repository
@@ -42,10 +42,10 @@ WORKDIR /app
 
 # ------------------------------------------------------------
 # Clone hermes-agent and hermes-webui
-# These are the core AI agent and web interface
+# NOTE: WebUI is now at nesquena/hermes-webui (not NousResearch)
 # ------------------------------------------------------------
 RUN git clone https://github.com/NousResearch/hermes-agent.git /app/hermes-agent \
-    && git clone https://github.com/NousResearch/hermes-webui.git /app/webui
+    && git clone https://github.com/nesquena/hermes-webui.git /app/webui
 
 # ------------------------------------------------------------
 # Install hermes-agent (editable mode for development)
