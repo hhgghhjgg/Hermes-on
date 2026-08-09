@@ -21,14 +21,38 @@ echo "[SYNC]   - profiles/"
 echo "[SYNC]   - crons/"
 echo "[SYNC]   - plans/"
 echo "[SYNC]   - Everything else in /data/.hermes/"
+echo "[SYNC] Modal: state stored in Modal Volumes (not synced here)"
 echo "=========================================="
 
 cd "$HERMES_DIR" || exit 1
 
 counter=0
+
+# ============================================================
+# Helper function to check Modal Client health
+# ============================================================
+check_modal_client() {
+    if [ -n "$MODAL_TOKEN_ID" ]; then
+        MODAL_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health 2>/dev/null || echo "000")
+        if [ "$MODAL_HEALTH" = "200" ]; then
+            echo "[SYNC #$counter] ✓ Modal Client healthy (port 8090)"
+        else
+            echo "[SYNC #$counter] ⚠️ Modal Client not responding (port 8090)"
+        fi
+    fi
+}
+
+# ============================================================
+# Main sync loop
+# ============================================================
 while true; do
     sleep "$SYNC_INTERVAL"
     counter=$((counter + 1))
+    
+    # Check Modal Client health every 10 syncs (every 5 min)
+    if [ $((counter % 10)) -eq 0 ]; then
+        check_modal_client
+    fi
     
     if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
         if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
