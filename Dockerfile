@@ -1,55 +1,122 @@
-# Use official Python 3.11 slim image
+# ============================================================
+# Hermes Agent - Docker Image with Modal Sandbox Support
+# ============================================================
+# This image provides:
+#   - Hermes Agent (core AI agent)
+#   - Hermes WebUI (web interface)
+#   - Qwen OAuth Proxy (port 8080)
+#   - Modal Client API (port 8090)
+#   - Git sync with Hermes-pre repository
+# ============================================================
+
 FROM python:3.11-slim
 
-# Prevent Python from writing .pyc files and buffering stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV DEBIAN_FRONTEND=noninteractive
+# ------------------------------------------------------------
+# Environment variables
+# PYTHONUNBUFFERED: real-time logs for Render
+# PYTHONDONTWRITEBYTECODE: prevent .pyc files
+# PIP_NO_CACHE_DIR: smaller image size
+# MODAL_ENVIRONMENT: default Modal environment (main)
+# ------------------------------------------------------------
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    MODAL_ENVIRONMENT=main
 
-# Install system dependencies
+# ------------------------------------------------------------
+# System dependencies
+# git: required for sync.sh and FULL RESTORE from Hermes-pre
+# curl/wget/unzip: general utilities
+# ca-certificates: HTTPS support
+# ------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     wget \
+    unzip \
     ca-certificates \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Install Hermes Agent
-RUN git clone https://github.com/NousResearch/hermes-agent.git /app/hermes-agent && \
-    cd /app/hermes-agent && \
-    pip install --no-cache-dir -e .
+# ------------------------------------------------------------
+# Clone hermes-agent and hermes-webui
+# These are the core AI agent and web interface
+# ------------------------------------------------------------
+RUN git clone https://github.com/NousResearch/hermes-agent.git /app/hermes-agent \
+    && git clone https://github.com/NousResearch/hermes-webui.git /app/webui
 
-# Install Hermes WebUI
-RUN git clone https://github.com/nesquena/hermes-webui.git /app/hermes-webui && \
-    cd /app/hermes-webui && \
-    pip install --no-cache-dir -r requirements.txt
+# ------------------------------------------------------------
+# Install hermes-agent (editable mode for development)
+# ------------------------------------------------------------
+WORKDIR /app/hermes-agent
+RUN pip install --no-cache-dir -e .
 
-# Copy our scripts
-COPY entrypoint.sh /app/entrypoint.sh
+# ------------------------------------------------------------
+# Install hermes-webui dependencies
+# ------------------------------------------------------------
+WORKDIR /app/webui
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ------------------------------------------------------------
+# Install Hermes-on requirements
+# Includes:
+#   - flask, requests (for qwen-proxy.py)
+#   - modal>=0.73.0 (for modal-client.py)
+# ------------------------------------------------------------
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# ------------------------------------------------------------
+# Copy operational scripts
+# sync.sh: background sync to Hermes-pre GitHub repo
+# entrypoint.sh: startup script with FULL RESTORE
+# qwen-proxy.py: OAuth proxy for Qwen models
+# modal-client.py: Modal Sandbox API server
+# ------------------------------------------------------------
 COPY sync.sh /app/sync.sh
+COPY entrypoint.sh /app/entrypoint.sh
+COPY qwen-proxy.py /app/qwen-proxy.py
+COPY modal-client.py /app/modal-client.py
 
-# Make scripts executable
-RUN chmod +x /app/entrypoint.sh /app/sync.sh
+RUN chmod +x /app/sync.sh /app/entrypoint.sh
 
-# Create data directory
-RUN mkdir -p /data
+# ------------------------------------------------------------
+# Modal SDK config directory
+# (Tokens are read from Environment Variables, no file needed)
+# ------------------------------------------------------------
+RUN mkdir -p /root/.modal
 
-# Set environment variables for Hermes
-ENV HERMES_HOME=/data/.hermes
-ENV HERMES_WEBUI_STATE_DIR=/data/.hermes/webui
-ENV HERMES_WEBUI_AGENT_DIR=/app/hermes-agent
-ENV HERMES_WEBUI_HOST=0.0.0.0
-ENV HERMES_WEBUI_PORT=8787
+# ------------------------------------------------------------
+# Workspace directory (where Hermes works)
+# ------------------------------------------------------------
+RUN mkdir -p /workspace
+WORKDIR /workspace
 
-# OmniRoute external URL (set in Render Environment Variables)
-ENV OMNIROUTE_URL=https://omniroute-app-production-9940.up.railway.app
+# ------------------------------------------------------------
+# Ports
+# 8787: Hermes WebUI (main web interface)
+# 8080: Qwen OAuth Proxy (API gateway for Qwen models)
+# 8090: Modal Client API (internal use by Hermes)
+#       Note: 8090 is internal only, not exposed to public
+# ------------------------------------------------------------
+EXPOSE 8787 8080
 
-# Expose WebUI port only
-EXPOSE 8787
+# ------------------------------------------------------------
+# Health check (optional but recommended)
+# ------------------------------------------------------------
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8787/ || exit 1
 
-# Set entrypoint
+# ------------------------------------------------------------
+# Entry point
+# entrypoint.sh handles:
+#   1. Git configuration
+#   2. Modal configuration
+#   3. FULL RESTORE from Hermes-pre
+#   4. Skills installation (72 bundled + 129 optional)
+#   5. config.yaml generation
+#   6. Starting sync.sh, Qwen Proxy, Modal Client, WebUI
+# ------------------------------------------------------------
 ENTRYPOINT ["/app/entrypoint.sh"]
