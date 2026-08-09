@@ -15,6 +15,41 @@ git config --global pull.rebase false
 git config --global advice.detachedHead false
 
 # ============================================================
+# 🔥 Modal Configuration
+# ============================================================
+echo "=========================================="
+echo "[MODAL] Checking Modal credentials..."
+echo "=========================================="
+
+MODAL_CLIENT_ENABLED=false
+MODAL_PID=""
+
+if [ -n "$MODAL_TOKEN_ID" ] && [ -n "$MODAL_TOKEN_SECRET" ]; then
+    echo "[MODAL] ✅ MODAL_TOKEN_ID: ${MODAL_TOKEN_ID:0:10}..."
+    echo "[MODAL] ✅ MODAL_TOKEN_SECRET: set (${#MODAL_TOKEN_SECRET} chars)"
+    echo "[MODAL] ✅ MODAL_ENVIRONMENT: ${MODAL_ENVIRONMENT:-main}"
+    
+    # Create Modal config directory
+    mkdir -p /root/.modal
+    echo "[MODAL] ✅ Config directory ready: /root/.modal"
+    
+    # Export Modal environment variables explicitly
+    export MODAL_TOKEN_ID
+    export MODAL_TOKEN_SECRET
+    export MODAL_ENVIRONMENT="${MODAL_ENVIRONMENT:-main}"
+    
+    echo "[MODAL] ✅ Modal environment variables exported"
+    MODAL_CLIENT_ENABLED=true
+else
+    echo "[MODAL] ⚠️ Modal credentials not set!"
+    echo "[MODAL]    MODAL_TOKEN_ID: $([ -n "$MODAL_TOKEN_ID" ] && echo SET || echo MISSING)"
+    echo "[MODAL]    MODAL_TOKEN_SECRET: $([ -n "$MODAL_TOKEN_SECRET" ] && echo SET || echo MISSING)"
+    echo "[MODAL]    Hermes will not be able to use Modal sandboxes"
+fi
+
+echo "=========================================="
+
+# ============================================================
 # Directory Setup
 # ============================================================
 DATA_DIR="/data"
@@ -336,7 +371,7 @@ else
 fi
 
 # ============================================================
-# 🔥 START QWEN PROXY (NEW!)
+# 🔥 START QWEN PROXY
 # ============================================================
 echo "=========================================="
 echo "[ENTRYPOINT] Starting Qwen OAuth Proxy..."
@@ -355,6 +390,84 @@ else
 fi
 
 # ============================================================
+# 🔥🔥🔥 NEW: START MODAL CLIENT API SERVER
+# ============================================================
+if [ "$MODAL_CLIENT_ENABLED" = true ]; then
+    echo "=========================================="
+    echo "[ENTRYPOINT] Starting Modal Client API..."
+    echo "=========================================="
+    
+    python3 /app/modal-client.py 2>&1 &
+    MODAL_PID=$!
+    echo "[ENTRYPOINT] Modal Client PID: $MODAL_PID"
+    
+    sleep 4
+    if kill -0 $MODAL_PID 2>/dev/null; then
+        echo "[ENTRYPOINT] ✅ Modal Client is running on port 8090"
+        echo "[ENTRYPOINT] ✅ Hermes can create sandboxes via: http://localhost:8090"
+        echo "[ENTRYPOINT] ✅ Supported languages: PHP, Python, Node, Go, Java, Rust, etc."
+        echo "[ENTRYPOINT] ✅ Hermes can install ANY package via apt/pip/npm/composer"
+    else
+        echo "[ENTRYPOINT] ❌ Modal Client FAILED to start!"
+        echo "[ENTRYPOINT]    Hermes will continue without Modal support"
+        MODAL_PID=""
+    fi
+    
+    echo "=========================================="
+fi
+
+# ============================================================
+# 🔥 Test Modal Connection (if credentials are set)
+# ============================================================
+if [ "$MODAL_CLIENT_ENABLED" = true ]; then
+    echo "=========================================="
+    echo "[MODAL] Verifying Modal SDK..."
+    echo "=========================================="
+    
+    python3 << 'MODAL_TEST'
+import os
+import sys
+
+try:
+    import modal
+    
+    # Modal reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from env
+    token_id = os.environ.get('MODAL_TOKEN_ID', '')
+    token_secret = os.environ.get('MODAL_TOKEN_SECRET', '')
+    environment = os.environ.get('MODAL_ENVIRONMENT', 'main')
+    
+    if not token_id or not token_secret:
+        print("[MODAL] ❌ Modal tokens not found in environment")
+        sys.exit(1)
+    
+    print(f"[MODAL] Token ID: {token_id[:10]}...")
+    print(f"[MODAL] Environment: {environment}")
+    
+    # Try to connect
+    client = modal.Client.from_env()
+    print("[MODAL] ✅ Client created successfully")
+    
+    print("[MODAL] ✅ Modal integration ready!")
+    print("[MODAL] Hermes can now create sandboxes for:")
+    print("[MODAL]   - PHP/Laravel projects")
+    print("[MODAL]   - Python scripts and ML tasks")
+    print("[MODAL]   - Node.js applications (React, Vue, Express)")
+    print("[MODAL]   - Go/Java/Rust projects")
+    print("[MODAL]   - Any language installable via apt/pip/npm")
+    
+except ImportError:
+    print("[MODAL] ❌ Modal SDK not installed!")
+    print("[MODAL] Run: pip install modal>=0.73.0")
+    sys.exit(1)
+except Exception as e:
+    print(f"[MODAL] ⚠️ Modal verification failed: {e}")
+    print("[MODAL] Modal Client will handle connection at runtime")
+MODAL_TEST
+    
+    echo "=========================================="
+fi
+
+# ============================================================
 # Set Environment Variables
 # ============================================================
 export HERMES_HOME="$HERMES_DIR"
@@ -365,11 +478,15 @@ export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 export HERMES_WORKSPACE="$HERMES_DIR/workspace"
 export HERMES_WEBUI_DEFAULT_WORKSPACE="$HERMES_DIR/workspace"
 
+# Export Modal Client URL for Hermes to use
+export MODAL_CLIENT_URL="http://localhost:8090"
+
 echo "[ENTRYPOINT] HERMES_HOME: $HERMES_HOME"
 echo "[ENTRYPOINT] HERMES_WEBUI_STATE_DIR: $HERMES_WEBUI_STATE_DIR"
 echo "[ENTRYPOINT] HERMES_WORKSPACE: $HERMES_WORKSPACE"
 echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
 echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
+echo "[ENTRYPOINT] MODAL_CLIENT_URL: $MODAL_CLIENT_URL"
 
 # ============================================================
 # Graceful Shutdown Handler
@@ -380,11 +497,23 @@ cleanup() {
     echo "[ENTRYPOINT] Shutting down - forcing final sync..."
     echo "=========================================="
     
-    kill $SYNC_PID 2>/dev/null || true
-    kill $PROXY_PID 2>/dev/null || true
-    wait $SYNC_PID 2>/dev/null || true
-    wait $PROXY_PID 2>/dev/null || true
+    # Kill all background processes
+    if [ -n "$SYNC_PID" ]; then
+        kill $SYNC_PID 2>/dev/null || true
+        wait $SYNC_PID 2>/dev/null || true
+    fi
     
+    if [ -n "$PROXY_PID" ]; then
+        kill $PROXY_PID 2>/dev/null || true
+        wait $PROXY_PID 2>/dev/null || true
+    fi
+    
+    if [ -n "$MODAL_PID" ]; then
+        kill $MODAL_PID 2>/dev/null || true
+        wait $MODAL_PID 2>/dev/null || true
+    fi
+    
+    # Final sync to GitHub
     cd "$HERMES_DIR"
     if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
         echo "[ENTRYPOINT] Committing final changes (ALL data)..."
