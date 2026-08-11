@@ -302,6 +302,48 @@ user:
   profile_path: ${HERMES_DIR}/USER.md
 soul:
   path: ${HERMES_DIR}/SOUL.md
+
+# 🔥 فعال‌سازی تمام پلاگین‌ها
+plugins:
+  enabled:
+    # جستجوی وب (بدون API Key کار می‌کنه)
+    - web/ddgs
+    # مرورگرهای خودکار
+    - browser/browser_use
+    - browser/firecrawl
+    - browser/browserbase
+    # تولید تصویر و ویدیو
+    - image_gen/openai
+    - image_gen/fal
+    - image_gen/xai
+    - video_gen/fal
+    - video_gen/xai
+    # پیام‌رسان‌ها
+    - discord-platform
+    - telegram-platform
+    - slack-platform
+    - whatsapp-platform
+    - sms-platform
+    - matrix-platform
+    # پروتکل Agent-to-Agent
+    - a2a-platform
+    # ابزارهای مفید دیگه
+    - disk-cleanup
+    - security-guidance
+    - web/brave_free
+    - web/exa
+    - web/tavily
+
+# 🔥 دادن ابزارهای پلاگین‌ها به ایجنت
+tools:
+  enabled: true
+  platform_toolsets:
+    - web
+    - browser
+    - image_gen
+    - video_gen
+    - a2a
+    - cron
 EOF
 
 echo "\[CONFIG\] ✅ config.yaml written"
@@ -309,6 +351,8 @@ echo "\[CONFIG\] Provider: omniroute"
 echo "\[CONFIG\] API: ${OMNI_API_URL}"
 echo "\[CONFIG\] Model: ${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}"
 echo "\[CONFIG\] API Key: ***"
+echo "\[CONFIG\] ✅ Plugins section added with 20+ plugins enabled"
+echo "\[CONFIG\] ✅ Toolsets section added (web, browser, image_gen, video_gen, a2a, cron)"
 
 # ============================================================
 # Final State Summary
