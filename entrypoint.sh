@@ -266,6 +266,38 @@ if [ -d "/root/workspace" ]; then
 fi
 
 # ============================================================
+# 🔥🔥🔥 NEW: AUTO-DISCOVER ALL PLUGINS
+# ============================================================
+echo "=========================================="
+echo "\[PLUGINS\] Auto-discovering all plugins..."
+echo "=========================================="
+
+# Find all plugins in the hermes-agent source
+PLUGINS_DIR="$HERMES_SOURCE/plugins"
+PLUGIN_LIST=""
+
+if [ -d "$PLUGINS_DIR" ]; then
+  echo "\[PLUGINS\] Scanning: $PLUGINS_DIR"
+  
+  # Find all plugin directories (they have plugin.yaml)
+  PLUGIN_LIST=$(find "$PLUGINS_DIR" -maxdepth 2 -name "plugin.yaml" -exec dirname {} \; | sed "s|$PLUGINS_DIR/||" | sort -u | tr '\n' ',' | sed 's/,$//')
+  
+  PLUGIN_COUNT=$(echo "$PLUGIN_LIST" | tr ',' '\n' | wc -l)
+  
+  echo "\[PLUGINS\] ✅ Found $PLUGIN_COUNT plugins:"
+  echo "$PLUGIN_LIST" | tr ',' '\n' | sed 's/^/  - /'
+  echo "=========================================="
+else
+  echo "\[PLUGINS\] ⚠️ Plugins directory not found at $PLUGINS_DIR"
+  echo "\[PLUGINS\] Listing $HERMES_SOURCE contents:"
+  ls -la "$HERMES_SOURCE/" 2>/dev/null | head -20
+  echo "=========================================="
+fi
+
+# Export for use in config.yaml generation
+export HERMES_PLUGIN_LIST="$PLUGIN_LIST"
+
+# ============================================================
 # 🔥🔥🔥 NEW: GENERATE config.yaml → Connect Hermes to OmniRoute
 # ============================================================
 echo "=========================================="
@@ -279,6 +311,9 @@ OMNI_API_URL="${OMNI_URL}/v1"
 
 # API Key - Read from environment variable (fallback to hardcoded)
 OMNI_API_KEY="${OMNIROUTE_API_KEY:-sk-7150f73b0efb9f5e-d0a99b-0c5675aa}"
+
+# Convert comma-separated plugin list to YAML array format
+PLUGIN_YAML_LIST=$(echo "$HERMES_PLUGIN_LIST" | tr ',' '\n' | sed 's/^/    - /')
 
 # Generate config.yaml with Hermes-compatible format
 cat > "$HERMES_DIR/config.yaml" <<EOF
@@ -303,36 +338,10 @@ user:
 soul:
   path: ${HERMES_DIR}/SOUL.md
 
-# 🔥 فعال‌سازی تمام پلاگین‌ها
+# 🔥 تمام پلاگین‌های موجود به صورت خودکار فعال شدند
 plugins:
   enabled:
-    # جستجوی وب (بدون API Key کار می‌کنه)
-    - web/ddgs
-    # مرورگرهای خودکار
-    - browser/browser_use
-    - browser/firecrawl
-    - browser/browserbase
-    # تولید تصویر و ویدیو
-    - image_gen/openai
-    - image_gen/fal
-    - image_gen/xai
-    - video_gen/fal
-    - video_gen/xai
-    # پیام‌رسان‌ها
-    - discord-platform
-    - telegram-platform
-    - slack-platform
-    - whatsapp-platform
-    - sms-platform
-    - matrix-platform
-    # پروتکل Agent-to-Agent
-    - a2a-platform
-    # ابزارهای مفید دیگه
-    - disk-cleanup
-    - security-guidance
-    - web/brave_free
-    - web/exa
-    - web/tavily
+${PLUGIN_YAML_LIST}
 
 # 🔥 دادن ابزارهای پلاگین‌ها به ایجنت
 tools:
@@ -344,6 +353,8 @@ tools:
     - video_gen
     - a2a
     - cron
+    - platform
+    - observability
 EOF
 
 echo "\[CONFIG\] ✅ config.yaml written"
@@ -351,8 +362,7 @@ echo "\[CONFIG\] Provider: omniroute"
 echo "\[CONFIG\] API: ${OMNI_API_URL}"
 echo "\[CONFIG\] Model: ${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}"
 echo "\[CONFIG\] API Key: ***"
-echo "\[CONFIG\] ✅ Plugins section added with 20+ plugins enabled"
-echo "\[CONFIG\] ✅ Toolsets section added (web, browser, image_gen, video_gen, a2a, cron)"
+echo "\[CONFIG\] ✅ All plugins auto-discovered and enabled"
 
 # ============================================================
 # Final State Summary
