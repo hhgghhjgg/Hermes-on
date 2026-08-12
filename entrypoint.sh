@@ -1,4 +1,3 @@
-
 #!/bin/bash
 
 set -e
@@ -267,44 +266,80 @@ if [ -d "/root/workspace" ]; then
 fi
 
 # ============================================================
-# 🔥🔥🔥 NEW: AUTO-DISCOVER ALL PLUGINS (FIXED - NO DEPTH LIMIT)
+# 🔥🔥🔥 ENABLE ALL PLUGINS VIA HERMES CLI (CORRECT METHOD)
 # ============================================================
 echo "=========================================="
-echo "\[PLUGINS\] Auto-discovering all plugins..."
+echo "\[PLUGINS\] Enabling ALL plugins via Hermes CLI..."
 echo "=========================================="
 
-# Find all plugins in the hermes-agent source
-PLUGINS_DIR="$HERMES_SOURCE/plugins"
-PLUGIN_LIST=""
+# Set HERMES_HOME so CLI knows where to look
+export HERMES_HOME="$HERMES_DIR"
 
-if [ -d "$PLUGINS_DIR" ]; then
-  echo "\[PLUGINS\] Scanning: $PLUGINS_DIR (all depths)"
-  
-  # 🔥 FIX: Removed -maxdepth 2 to catch ALL plugins at any depth
-  # This now catches:
-  #   plugins/disk-cleanup/          (depth 1)
-  #   plugins/browser/browser_use/   (depth 2)
-  #   plugins/web/ddgs/              (depth 2)
-  #   plugins/dashboard_auth/nous/   (depth 2)
-  PLUGIN_LIST=$(find "$PLUGINS_DIR" -name "plugin.yaml" -exec dirname {} \; | sed "s|$PLUGINS_DIR/||" | sort -u | tr '\n' ',' | sed 's/,$//')
-  
-  PLUGIN_COUNT=$(echo "$PLUGIN_LIST" | tr ',' '\n' | wc -l)
-  
-  echo "\[PLUGINS\] ✅ Found $PLUGIN_COUNT plugins:"
-  echo "$PLUGIN_LIST" | tr ',' '\n' | sed 's/^/  - /'
-  echo "=========================================="
-else
-  echo "\[PLUGINS\] ⚠️ Plugins directory not found at $PLUGINS_DIR"
-  echo "\[PLUGINS\] Listing $HERMES_SOURCE contents:"
-  ls -la "$HERMES_SOURCE/" 2>/dev/null | head -20
-  echo "=========================================="
-fi
+# Change to hermes-agent directory
+cd /app/hermes-agent || exit 1
 
-# Export for use in config.yaml generation
-export HERMES_PLUGIN_LIST="$PLUGIN_LIST"
+echo "\[PLUGINS\] Discovering all plugins using PluginManager..."
+
+# Use Python to discover and enable all plugins
+python3 << 'PLUGIN_DISCOVERY_SCRIPT'
+import sys
+import os
+
+# Add hermes-agent to path
+sys.path.insert(0, '/app/hermes-agent')
+os.environ['HERMES_HOME'] = '/data/.hermes'
+
+try:
+    from hermes_cli.plugins import get_plugin_manager, enable_plugin
+    
+    print("[PLUGINS] Initializing PluginManager...")
+    manager = get_plugin_manager()
+    all_plugins = []
+    
+    # Discover all plugins from all sources
+    sources = ['bundled', 'user', 'project', 'pip']
+    for source in sources:
+        try:
+            print(f"[PLUGINS] Scanning {source}...")
+            plugins = manager.discover(source)
+            for p in plugins:
+                if p.name not in all_plugins:
+                    all_plugins.append(p.name)
+                    print(f"  ✅ Found: {p.name}")
+        except Exception as e:
+            print(f"  ⚠️ {source} scan warning: {e}")
+    
+    all_plugins.sort()
+    print(f"\n[PLUGINS] ✅ Total plugins discovered: {len(all_plugins)}")
+    
+    # Enable all plugins
+    print("\n[PLUGINS] Enabling all plugins...")
+    success_count = 0
+    for plugin_name in all_plugins:
+        try:
+            enable_plugin(plugin_name)
+            print(f"  ✅ Enabled: {plugin_name}")
+            success_count += 1
+        except Exception as e:
+            print(f"  ⚠️ Could not enable {plugin_name}: {e}")
+    
+    print(f"\n[PLUGINS] ✅ Successfully enabled {success_count}/{len(all_plugins)} plugins!")
+    print("[PLUGINS] config.yaml has been updated automatically")
+    
+except ImportError as e:
+    print(f"[PLUGINS] ❌ Error importing hermes_cli: {e}")
+    print("[PLUGINS] Falling back to manual config method...")
+except Exception as e:
+    print(f"[PLUGINS] ❌ Unexpected error: {e}")
+    import traceback
+    traceback.print_exc()
+
+PLUGIN_DISCOVERY_SCRIPT
+
+echo "=========================================="
 
 # ============================================================
-# 🔥🔥🔥 NEW: GENERATE config.yaml → Connect Hermes to OmniRoute
+# 🔥🔥🔥 GENERATE config.yaml → Connect Hermes to OmniRoute
 # ============================================================
 echo "=========================================="
 echo "\[CONFIG\] Generating config.yaml for OmniRoute..."
@@ -318,11 +353,64 @@ OMNI_API_URL="${OMNI_URL}/v1"
 # API Key - Read from environment variable (fallback to hardcoded)
 OMNI_API_KEY="${OMNIROUTE_API_KEY:-sk-7150f73b0efb9f5e-d0a99b-0c5675aa}"
 
-# Convert comma-separated plugin list to YAML array format
-PLUGIN_YAML_LIST=$(echo "$HERMES_PLUGIN_LIST" | tr ',' '\n' | sed 's/^/    - /')
+# Read existing config.yaml if it exists (to preserve plugin settings)
+CONFIG_PATH="$HERMES_DIR/config.yaml"
+if [ -f "$CONFIG_PATH" ]; then
+  echo "\[CONFIG\] ✅ Existing config.yaml found, preserving plugin settings"
+  
+  # Use Python to merge OmniRoute config with existing config
+  python3 << CONFIG_MERGE_SCRIPT
+import yaml
+import os
 
-# Generate config.yaml with Hermes-compatible format
-cat > "$HERMES_DIR/config.yaml" <<EOF
+config_path = "$CONFIG_PATH"
+omni_api_url = "$OMNI_API_URL"
+omni_api_key = "$OMNI_API_KEY"
+default_model = "${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}"
+hermes_dir = "$HERMES_DIR"
+
+# Load existing config
+with open(config_path, 'r') as f:
+    config = yaml.safe_load(f) or {}
+
+# Update OmniRoute provider
+if 'providers' not in config:
+    config['providers'] = {}
+
+config['providers']['omniroute'] = {
+    'api': omni_api_url,
+    'api_key': omni_api_key,
+    'transport': 'chat_completions',
+    'default_model': default_model,
+    'enabled': True
+}
+
+# Update model settings
+config['model'] = {
+    'default': default_model,
+    'provider': 'custom:omniroute'
+}
+
+# Ensure workspace and memory paths
+config['workspace'] = f'{hermes_dir}/workspace'
+config['memory'] = {
+    'enabled': True,
+    'path': f'{hermes_dir}/MEMORY.md'
+}
+config['user'] = {'profile_path': f'{hermes_dir}/USER.md'}
+config['soul'] = {'path': f'{hermes_dir}/SOUL.md'}
+
+# Save config
+with open(config_path, 'w') as f:
+    yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+print("[CONFIG] ✅ config.yaml updated with OmniRoute + preserved plugin settings")
+CONFIG_MERGE_SCRIPT
+else
+  echo "\[CONFIG\] ⚠️ No existing config.yaml, creating basic config"
+  
+  # Generate basic config.yaml
+  cat > "$CONFIG_PATH" <<EOF
 # Hermes Agent Configuration - Connected to OmniRoute
 # Generated by entrypoint.sh - DO NOT EDIT MANUALLY
 providers:
@@ -343,32 +431,15 @@ user:
   profile_path: ${HERMES_DIR}/USER.md
 soul:
   path: ${HERMES_DIR}/SOUL.md
-
-# 🔥 تمام پلاگین‌های موجود به صورت خودکار فعال شدند
-plugins:
-  enabled:
-${PLUGIN_YAML_LIST}
-
-# 🔥 دادن ابزارهای پلاگین‌ها به ایجنت
-tools:
-  enabled: true
-  platform_toolsets:
-    - web
-    - browser
-    - image_gen
-    - video_gen
-    - a2a
-    - cron
-    - platform
-    - observability
 EOF
 
-echo "\[CONFIG\] ✅ config.yaml written"
+  echo "\[CONFIG\] ✅ Basic config.yaml created"
+fi
+
 echo "\[CONFIG\] Provider: omniroute"
 echo "\[CONFIG\] API: ${OMNI_API_URL}"
 echo "\[CONFIG\] Model: ${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}"
 echo "\[CONFIG\] API Key: ***"
-echo "\[CONFIG\] ✅ All plugins auto-discovered and enabled"
 
 # ============================================================
 # Final State Summary
