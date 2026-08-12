@@ -30,11 +30,9 @@ if [ -n "$MODAL_TOKEN_ID" ] && [ -n "$MODAL_TOKEN_SECRET" ]; then
   echo "\[MODAL\] ✅ MODAL_TOKEN_SECRET: set (${#MODAL_TOKEN_SECRET} chars)"
   echo "\[MODAL\] ✅ MODAL_ENVIRONMENT: ${MODAL_ENVIRONMENT:-main}"
   
-  # Create Modal config directory
   mkdir -p /root/.modal
   echo "\[MODAL\] ✅ Config directory ready: /root/.modal"
   
-  # Export Modal environment variables explicitly
   export MODAL_TOKEN_ID
   export MODAL_TOKEN_SECRET
   export MODAL_ENVIRONMENT="${MODAL_ENVIRONMENT:-main}"
@@ -114,11 +112,29 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
         fi
       fi
       
+      # ============================================================
+      # 🔥 FIX: Backup config.yaml BEFORE git reset
+      # ============================================================
+      CONFIG_BACKUP=""
+      if [ -f "$HERMES_DIR/config.yaml" ]; then
+        CONFIG_BACKUP=$(cat "$HERMES_DIR/config.yaml")
+        echo "\[ENTRYPOINT\] 💾 Backed up current config.yaml"
+      fi
+      
       echo "\[ENTRYPOINT\] Resetting to origin/main (FULL RESTORE)..."
       git reset --hard origin/main 2>&1 || true
-      git clean -fd -e "state.db*" -e "*.pre-*" 2>&1 || true
+      git clean -fd -e "state.db*" -e "*.pre-*" -e "config.yaml" 2>&1 || true
       echo "\[ENTRYPOINT\] ✅ ALL DATA RESTORED from GitHub!"
       echo "\[ENTRYPOINT\] Current commit: $(git rev-parse --short HEAD)"
+      
+      # ============================================================
+      # 🔥 FIX: Restore config.yaml AFTER git reset (prevent overwrite)
+      # ============================================================
+      if [ -n "$CONFIG_BACKUP" ]; then
+        echo "$CONFIG_BACKUP" > "$HERMES_DIR/config.yaml"
+        echo "\[ENTRYPOINT\] ♻️ Restored config.yaml (protected from git reset)"
+      fi
+      
     else
       echo "\[ENTRYPOINT\] ⚠️ No remote branch - starting fresh"
       cat > .gitignore <<'EOF'
@@ -204,7 +220,6 @@ echo "=========================================="
 if [ -d "$HERMES_SOURCE/skills" ]; then
   BEFORE_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
   
-  # List bundled categories
   echo "\[SKILLS\] Bundled categories found:"
   ls -1 "$HERMES_SOURCE/skills/" 2>/dev/null | while read category; do
     if [ -d "$HERMES_SOURCE/skills/$category" ]; then
@@ -235,7 +250,6 @@ echo "=========================================="
 if [ -d "$HERMES_SOURCE/optional-skills" ]; then
   BEFORE_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
   
-  # List optional categories
   echo "\[SKILLS\] Optional categories found:"
   ls -1 "$HERMES_SOURCE/optional-skills/" 2>/dev/null | while read category; do
     if [ -d "$HERMES_SOURCE/optional-skills/$category" ]; then
@@ -272,20 +286,15 @@ echo "=========================================="
 echo "\[PLUGINS\] Enabling ALL plugins via Hermes CLI..."
 echo "=========================================="
 
-# Set HERMES_HOME so CLI knows where to look
 export HERMES_HOME="$HERMES_DIR"
-
-# Change to hermes-agent directory
 cd /app/hermes-agent || exit 1
 
 echo "\[PLUGINS\] Discovering all plugins using PluginManager..."
 
-# Use Python to discover and enable all plugins
 python3 << 'PLUGIN_DISCOVERY_SCRIPT'
 import sys
 import os
 
-# Add hermes-agent to path
 sys.path.insert(0, '/app/hermes-agent')
 os.environ['HERMES_HOME'] = '/data/.hermes'
 
@@ -296,7 +305,6 @@ try:
     manager = get_plugin_manager()
     all_plugins = []
     
-    # Discover all plugins from all sources
     sources = ['bundled', 'user', 'project', 'pip']
     for source in sources:
         try:
@@ -312,7 +320,6 @@ try:
     all_plugins.sort()
     print(f"\n[PLUGINS] ✅ Total plugins discovered: {len(all_plugins)}")
     
-    # Enable all plugins
     print("\n[PLUGINS] Enabling all plugins...")
     success_count = 0
     for plugin_name in all_plugins:
@@ -346,19 +353,14 @@ echo "\[CONFIG\] Generating config.yaml for OmniRoute..."
 echo "\[CONFIG\] OMNIROUTE_URL: ${OMNIROUTE_URL:-NOT SET}"
 echo "=========================================="
 
-# Use OMNIROUTE_URL from env, fallback to Railway URL
 OMNI_URL="${OMNIROUTE_URL:-https://omniroute-app-production-9940.up.railway.app}"
 OMNI_API_URL="${OMNI_URL}/v1"
-
-# API Key - Read from environment variable (fallback to hardcoded)
 OMNI_API_KEY="${OMNIROUTE_API_KEY:-sk-7150f73b0efb9f5e-d0a99b-0c5675aa}"
 
-# Read existing config.yaml if it exists (to preserve plugin settings)
 CONFIG_PATH="$HERMES_DIR/config.yaml"
 if [ -f "$CONFIG_PATH" ]; then
   echo "\[CONFIG\] ✅ Existing config.yaml found, preserving plugin settings"
   
-  # Use Python to merge OmniRoute config with existing config
   python3 << CONFIG_MERGE_SCRIPT
 import yaml
 import os
@@ -369,11 +371,9 @@ omni_api_key = "$OMNI_API_KEY"
 default_model = "${HERMES_WEBUI_DEFAULT_MODEL:-hermes-fast}"
 hermes_dir = "$HERMES_DIR"
 
-# Load existing config
 with open(config_path, 'r') as f:
     config = yaml.safe_load(f) or {}
 
-# Update OmniRoute provider
 if 'providers' not in config:
     config['providers'] = {}
 
@@ -385,13 +385,11 @@ config['providers']['omniroute'] = {
     'enabled': True
 }
 
-# Update model settings
 config['model'] = {
     'default': default_model,
     'provider': 'custom:omniroute'
 }
 
-# Ensure workspace and memory paths
 config['workspace'] = f'{hermes_dir}/workspace'
 config['memory'] = {
     'enabled': True,
@@ -400,7 +398,6 @@ config['memory'] = {
 config['user'] = {'profile_path': f'{hermes_dir}/USER.md'}
 config['soul'] = {'path': f'{hermes_dir}/SOUL.md'}
 
-# Save config
 with open(config_path, 'w') as f:
     yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -409,7 +406,6 @@ CONFIG_MERGE_SCRIPT
 else
   echo "\[CONFIG\] ⚠️ No existing config.yaml, creating basic config"
   
-  # Generate basic config.yaml
   cat > "$CONFIG_PATH" <<EOF
 # Hermes Agent Configuration - Connected to OmniRoute
 # Generated by entrypoint.sh - DO NOT EDIT MANUALLY
@@ -456,7 +452,6 @@ fi
 SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
 echo "\[ENTRYPOINT\] Total skills: $SKILL_COUNT"
 
-# List all skill categories
 echo "\[ENTRYPOINT\] Skill categories installed:"
 ls -1 "$HERMES_DIR/skills/" 2>/dev/null | grep -v "^$" | sort
 
@@ -469,7 +464,6 @@ echo "\[ENTRYPOINT\] WebUI files: $WEBUI_FILES"
 WORKSPACE_FILES=$(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)
 echo "\[ENTRYPOINT\] Workspace files: $WORKSPACE_FILES"
 
-# Count all files that will be synced
 TOTAL_FILES=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
 echo "\[ENTRYPOINT\] Total files to sync: $TOTAL_FILES"
 echo "=========================================="
@@ -549,7 +543,6 @@ import sys
 try:
     import modal
     
-    # Modal reads MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from env
     token_id = os.environ.get('MODAL_TOKEN_ID', '')
     token_secret = os.environ.get('MODAL_TOKEN_SECRET', '')
     environment = os.environ.get('MODAL_ENVIRONMENT', 'main')
@@ -561,7 +554,6 @@ try:
     print(f"\[MODAL\] Token ID: {token_id[:10]}...")
     print(f"\[MODAL\] Environment: {environment}")
     
-    # Try to connect
     client = modal.Client.from_env()
     print("\[MODAL\] ✅ Client created successfully")
     print("\[MODAL\] ✅ Modal integration ready!")
@@ -595,7 +587,6 @@ export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 export HERMES_WORKSPACE="$HERMES_DIR/workspace"
 export HERMES_WEBUI_DEFAULT_WORKSPACE="$HERMES_DIR/workspace"
 
-# Export Modal Client URL for Hermes to use
 export MODAL_CLIENT_URL="http://localhost:8090"
 
 echo "\[ENTRYPOINT\] HERMES_HOME: $HERMES_HOME"
@@ -614,7 +605,6 @@ cleanup() {
   echo "\[ENTRYPOINT\] Shutting down - forcing final sync..."
   echo "=========================================="
 
-  # Kill all background processes
   if [ -n "$SYNC_PID" ]; then
     kill $SYNC_PID 2>/dev/null || true
     wait $SYNC_PID 2>/dev/null || true
@@ -628,7 +618,6 @@ cleanup() {
     wait $MODAL_PID 2>/dev/null || true
   fi
 
-  # Final sync to GitHub
   cd "$HERMES_DIR"
   if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
     echo "\[ENTRYPOINT\] Committing final changes (ALL data)..."
@@ -649,10 +638,8 @@ echo "=========================================="
 echo "\[ENTRYPOINT\] Starting Hermes WebUI..."
 echo "=========================================="
 
-# 🔥 FIXED: WebUI is cloned to /app/webui (not /app/hermes-webui)
 cd /app/webui || exit 1
 
-# Verify server.py exists
 if [ ! -f "server.py" ]; then
   echo "\[ENTRYPOINT\] ❌ server.py not found in /app/webui!"
   echo "\[ENTRYPOINT\] Listing contents:"
