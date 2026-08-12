@@ -280,62 +280,131 @@ if [ -d "/root/workspace" ]; then
 fi
 
 # ============================================================
-# 🔥🔥🔥 ENABLE ALL PLUGINS VIA HERMES CLI (CORRECT METHOD)
+# 🔥🔥🔥 ENABLE ALL PLUGINS BY DIRECTLY EDITING config.yaml
 # ============================================================
 echo "=========================================="
-echo "\[PLUGINS\] Enabling ALL plugins via Hermes CLI..."
+echo "\[PLUGINS\] Discovering and enabling ALL plugins..."
 echo "=========================================="
 
 export HERMES_HOME="$HERMES_DIR"
 cd /app/hermes-agent || exit 1
 
-echo "\[PLUGINS\] Discovering all plugins using PluginManager..."
-
 python3 << 'PLUGIN_DISCOVERY_SCRIPT'
 import sys
 import os
+import yaml
 
 sys.path.insert(0, '/app/hermes-agent')
 os.environ['HERMES_HOME'] = '/data/.hermes'
 
 try:
-    from hermes_cli.plugins import get_plugin_manager, enable_plugin
+    from hermes_cli.plugins import PluginManager
     
     print("[PLUGINS] Initializing PluginManager...")
-    manager = get_plugin_manager()
-    all_plugins = []
+    manager = PluginManager()
+    all_plugins = set()
     
+    # Discover all plugins from all sources
     sources = ['bundled', 'user', 'project', 'pip']
     for source in sources:
         try:
             print(f"[PLUGINS] Scanning {source}...")
             plugins = manager.discover(source)
             for p in plugins:
-                if p.name not in all_plugins:
-                    all_plugins.append(p.name)
-                    print(f"  ✅ Found: {p.name}")
+                if hasattr(p, 'name'):
+                    plugin_name = p.name
+                elif hasattr(p, 'manifest') and hasattr(p.manifest, 'name'):
+                    plugin_name = p.manifest.name
+                else:
+                    plugin_name = str(p)
+                
+                if plugin_name and plugin_name not in all_plugins:
+                    all_plugins.add(plugin_name)
+                    print(f"  ✅ Found: {plugin_name}")
         except Exception as e:
             print(f"  ⚠️ {source} scan warning: {e}")
     
-    all_plugins.sort()
-    print(f"\n[PLUGINS] ✅ Total plugins discovered: {len(all_plugins)}")
+    all_plugins_list = sorted(list(all_plugins))
+    print(f"\n[PLUGINS] ✅ Total plugins discovered: {len(all_plugins_list)}")
     
-    print("\n[PLUGINS] Enabling all plugins...")
-    success_count = 0
-    for plugin_name in all_plugins:
-        try:
-            enable_plugin(plugin_name)
-            print(f"  ✅ Enabled: {plugin_name}")
-            success_count += 1
-        except Exception as e:
-            print(f"  ⚠️ Could not enable {plugin_name}: {e}")
+    # Load or create config.yaml
+    config_path = '/data/.hermes/config.yaml'
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+        print(f"[PLUGINS] ✅ Loaded existing config.yaml")
+    else:
+        config = {}
+        print(f"[PLUGINS] ⚠️ No config.yaml found, will create")
     
-    print(f"\n[PLUGINS] ✅ Successfully enabled {success_count}/{len(all_plugins)} plugins!")
-    print("[PLUGINS] config.yaml has been updated automatically")
+    # Update plugins section
+    config['plugins'] = {'enabled': all_plugins_list}
+    print(f"[PLUGINS] ✅ Updated plugins.enabled with {len(all_plugins_list)} plugins")
+    
+    # Update tools section
+    config['tools'] = {
+        'enabled': True,
+        'platform_toolsets': [
+            'web', 'browser', 'image_gen', 'video_gen',
+            'a2a', 'cron', 'platform', 'observability',
+            'spotify', 'messaging', 'dashboard_auth'
+        ]
+    }
+    print(f"[PLUGINS] ✅ Updated tools.platform_toolsets")
+    
+    # Save config
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    
+    print(f"\n[PLUGINS] ✅ Successfully enabled {len(all_plugins_list)} plugins!")
+    print("[PLUGINS] config.yaml has been updated")
     
 except ImportError as e:
     print(f"[PLUGINS] ❌ Error importing hermes_cli: {e}")
-    print("[PLUGINS] Falling back to manual config method...")
+    print("[PLUGINS] Attempting fallback method...")
+    
+    # Fallback: Use find to discover plugins
+    import subprocess
+    result = subprocess.run(
+        ['find', '/app/hermes-agent/plugins', '-name', 'plugin.yaml'],
+        capture_output=True,
+        text=True
+    )
+    
+    plugin_paths = result.stdout.strip().split('\n')
+    all_plugins = []
+    
+    for path in plugin_paths:
+        if path:
+            # Extract plugin name from path
+            rel_path = path.replace('/app/hermes-agent/plugins/', '')
+            plugin_name = rel_path.split('/')[0]
+            if plugin_name not in all_plugins:
+                all_plugins.append(plugin_name)
+    
+    all_plugins.sort()
+    print(f"[PLUGINS] Fallback found {len(all_plugins)} plugins via find")
+    
+    # Update config.yaml
+    config_path = '/data/.hermes/config.yaml'
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+        
+        config['plugins'] = {'enabled': all_plugins}
+        config['tools'] = {
+            'enabled': True,
+            'platform_toolsets': [
+                'web', 'browser', 'image_gen', 'video_gen',
+                'a2a', 'cron', 'platform', 'observability'
+            ]
+        }
+        
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        
+        print(f"[PLUGINS] ✅ Fallback: enabled {len(all_plugins)} plugins")
+
 except Exception as e:
     print(f"[PLUGINS] ❌ Unexpected error: {e}")
     import traceback
