@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 set -e
@@ -266,7 +267,7 @@ if [ -d "/root/workspace" ]; then
 fi
 
 # ============================================================
-# 🔥🔥🔥 NEW: AUTO-DISCOVER ALL PLUGINS
+# 🔥🔥🔥 NEW: AUTO-DISCOVER ALL PLUGINS (FIXED - NO DEPTH LIMIT)
 # ============================================================
 echo "=========================================="
 echo "\[PLUGINS\] Auto-discovering all plugins..."
@@ -277,10 +278,15 @@ PLUGINS_DIR="$HERMES_SOURCE/plugins"
 PLUGIN_LIST=""
 
 if [ -d "$PLUGINS_DIR" ]; then
-  echo "\[PLUGINS\] Scanning: $PLUGINS_DIR"
+  echo "\[PLUGINS\] Scanning: $PLUGINS_DIR (all depths)"
   
-  # Find all plugin directories (they have plugin.yaml)
-  PLUGIN_LIST=$(find "$PLUGINS_DIR" -maxdepth 2 -name "plugin.yaml" -exec dirname {} \; | sed "s|$PLUGINS_DIR/||" | sort -u | tr '\n' ',' | sed 's/,$//')
+  # 🔥 FIX: Removed -maxdepth 2 to catch ALL plugins at any depth
+  # This now catches:
+  #   plugins/disk-cleanup/          (depth 1)
+  #   plugins/browser/browser_use/   (depth 2)
+  #   plugins/web/ddgs/              (depth 2)
+  #   plugins/dashboard_auth/nous/   (depth 2)
+  PLUGIN_LIST=$(find "$PLUGINS_DIR" -name "plugin.yaml" -exec dirname {} \; | sed "s|$PLUGINS_DIR/||" | sort -u | tr '\n' ',' | sed 's/,$//')
   
   PLUGIN_COUNT=$(echo "$PLUGIN_LIST" | tr ',' '\n' | wc -l)
   
