@@ -280,10 +280,10 @@ if [ -d "/root/workspace" ]; then
 fi
 
 # ============================================================
-# 🔥🔥🔥 ENABLE ALL PLUGINS BY DIRECTLY EDITING config.yaml
+# 🔥🔥🔥 ENABLE ALL PLUGINS USING _discover_all_plugins (CORRECT METHOD)
 # ============================================================
 echo "=========================================="
-echo "\[PLUGINS\] Discovering and enabling ALL plugins..."
+echo "\[PLUGINS\] Discovering ALL plugins using Hermes discovery..."
 echo "=========================================="
 
 export HERMES_HOME="$HERMES_DIR"
@@ -298,36 +298,24 @@ sys.path.insert(0, '/app/hermes-agent')
 os.environ['HERMES_HOME'] = '/data/.hermes'
 
 try:
-    from hermes_cli.plugins import PluginManager
+    # Import the discovery function that hermes plugins list uses
+    from hermes_cli.plugins_cmd import _discover_all_plugins
     
-    print("[PLUGINS] Initializing PluginManager...")
-    manager = PluginManager()
-    all_plugins = set()
+    print("[PLUGINS] Calling _discover_all_plugins()...")
+    entries = _discover_all_plugins()
     
-    # Discover all plugins from all sources
-    sources = ['bundled', 'user', 'project', 'pip']
-    for source in sources:
-        try:
-            print(f"[PLUGINS] Scanning {source}...")
-            plugins = manager.discover(source)
-            for p in plugins:
-                if hasattr(p, 'name'):
-                    plugin_name = p.name
-                elif hasattr(p, 'manifest') and hasattr(p.manifest, 'name'):
-                    plugin_name = p.manifest.name
-                else:
-                    plugin_name = str(p)
-                
-                if plugin_name and plugin_name not in all_plugins:
-                    all_plugins.add(plugin_name)
-                    print(f"  ✅ Found: {plugin_name}")
-        except Exception as e:
-            print(f"  ⚠️ {source} scan warning: {e}")
+    all_plugin_keys = []
     
-    all_plugins_list = sorted(list(all_plugins))
-    print(f"\n[PLUGINS] ✅ Total plugins discovered: {len(all_plugins_list)}")
+    for entry in entries:
+        name, version, description, source, dir_path, key = entry
+        if key not in all_plugin_keys:
+            all_plugin_keys.append(key)
+            print(f"  ✅ Found: {key} ({source})")
     
-    # Load or create config.yaml
+    all_plugin_keys.sort()
+    print(f"\n[PLUGINS] ✅ Total discovered: {len(all_plugin_keys)} plugins")
+    
+    # Load existing config
     config_path = '/data/.hermes/config.yaml'
     if os.path.exists(config_path):
         with open(config_path, 'r') as f:
@@ -335,11 +323,10 @@ try:
         print(f"[PLUGINS] ✅ Loaded existing config.yaml")
     else:
         config = {}
-        print(f"[PLUGINS] ⚠️ No config.yaml found, will create")
+        print(f"[PLUGINS] ⚠️ No config.yaml, creating new")
     
-    # Update plugins section
-    config['plugins'] = {'enabled': all_plugins_list}
-    print(f"[PLUGINS] ✅ Updated plugins.enabled with {len(all_plugins_list)} plugins")
+    # Update plugins section with canonical keys
+    config['plugins'] = {'enabled': all_plugin_keys}
     
     # Update tools section
     config['tools'] = {
@@ -350,21 +337,21 @@ try:
             'spotify', 'messaging', 'dashboard_auth'
         ]
     }
-    print(f"[PLUGINS] ✅ Updated tools.platform_toolsets")
     
     # Save config
     with open(config_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     
-    print(f"\n[PLUGINS] ✅ Successfully enabled {len(all_plugins_list)} plugins!")
-    print("[PLUGINS] config.yaml has been updated")
+    print(f"\n[PLUGINS] ✅ Successfully enabled {len(all_plugin_keys)} plugins!")
+    print("[PLUGINS] config.yaml updated with canonical keys")
     
 except ImportError as e:
-    print(f"[PLUGINS] ❌ Error importing hermes_cli: {e}")
+    print(f"[PLUGINS] ❌ Error importing: {e}")
     print("[PLUGINS] Attempting fallback method...")
     
-    # Fallback: Use find to discover plugins
+    # Fallback: manual scan using find
     import subprocess
+    
     result = subprocess.run(
         ['find', '/app/hermes-agent/plugins', '-name', 'plugin.yaml'],
         capture_output=True,
@@ -375,17 +362,19 @@ except ImportError as e:
     all_plugins = []
     
     for path in plugin_paths:
-        if path:
-            # Extract plugin name from path
-            rel_path = path.replace('/app/hermes-agent/plugins/', '')
-            plugin_name = rel_path.split('/')[0]
-            if plugin_name not in all_plugins:
-                all_plugins.append(plugin_name)
+        if path and 'plugin.yaml' in path:
+            # Extract relative path from plugins directory
+            rel_path = path.replace('/app/hermes-agent/plugins/', '').replace('/plugin.yaml', '')
+            # Convert path separators to canonical key format
+            canonical_key = rel_path.replace('/', '/')
+            if canonical_key not in all_plugins:
+                all_plugins.append(canonical_key)
+                print(f"  ✅ Found: {canonical_key}")
     
     all_plugins.sort()
-    print(f"[PLUGINS] Fallback found {len(all_plugins)} plugins via find")
+    print(f"[PLUGINS] Fallback found {len(all_plugins)} plugins")
     
-    # Update config.yaml
+    # Update config
     config_path = '/data/.hermes/config.yaml'
     if os.path.exists(config_path):
         with open(config_path, 'r') as f:
