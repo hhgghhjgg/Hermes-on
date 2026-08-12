@@ -3,6 +3,7 @@
 # ============================================================
 # ✅ All languages are LATEST STABLE versions from official sources
 # ✅ Compatible with Debian Trixie (python:3.11-slim base)
+# ✅ PowerShell installed from GitHub binary (bypass Microsoft apt 403)
 # ============================================================
 
 FROM python:3.11-slim
@@ -17,11 +18,12 @@ ENV PYTHONUNBUFFERED=1 \
     MODAL_ENVIRONMENT=main \
     HERMES_WEBUI_PORT=8080 \
     HERMES_WEBUI_HOST=0.0.0.0 \
-    PATH="/root/.local/bin:/root/.cargo/bin:/root/.deno/bin:/root/.bun/bin:/usr/local/go/bin:/opt/kotlinc/bin:/opt/zig:/opt/julia/bin:$PATH" \
+    PATH="/root/.local/bin:/root/.cargo/bin:/root/.deno/bin:/root/.bun/bin:/usr/local/go/bin:/opt/kotlinc/bin:/opt/zig:/opt/julia/bin:/opt/microsoft/powershell/7:$PATH" \
     GO_VERSION=1.23.1 \
     ZIG_VERSION=0.13.0 \
     KOTLIN_VERSION=2.0.20 \
-    JULIA_VERSION=1.11.0
+    JULIA_VERSION=1.11.0 \
+    POWERSHELL_VERSION=7.4.5
 
 # ------------------------------------------------------------
 # System base dependencies (single apt layer)
@@ -34,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     elixir \
     openjdk-21-jre-headless \
     r-base-core \
+    libicu-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
@@ -125,13 +128,15 @@ RUN wget -q https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_V
     && rm /tmp/zig.tar.xz
 
 # ============================================================
-# LANGUAGE 17: PowerShell 7.4 ✅ (latest LTS - official Microsoft)
+# LANGUAGE 17: PowerShell 7.4.5 LTS ✅
+# 🔥 FIXED: Installed from GitHub binary (Microsoft apt returns 403)
 # ============================================================
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/microsoft-debian-bookworm-prod bookworm main" > /etc/apt/sources.list.d/microsoft.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends powershell \
-    && rm -rf /var/lib/apt/lists/*
+RUN wget -q https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-x64.tar.gz -O /tmp/pwsh.tar.gz \
+    && mkdir -p /opt/microsoft/powershell/7 \
+    && tar -xzf /tmp/pwsh.tar.gz -C /opt/microsoft/powershell/7 \
+    && chmod +x /opt/microsoft/powershell/7/pwsh \
+    && rm /tmp/pwsh.tar.gz \
+    && echo "✅ PowerShell ${POWERSHELL_VERSION} installed from GitHub binary"
 
 # ============================================================
 # LANGUAGE 18: R ✅ (latest stable - Debian official)
@@ -183,26 +188,26 @@ RUN uv tool install mcp-server-git || true \
 RUN echo "============================================" \
     && echo "🔍 VERIFYING ALL LANGUAGES" \
     && echo "============================================" \
-    && echo "1.  Python:    $(python3 --version 2>&1)" \
-    && echo "2.  Node.js:   $(node --version 2>&1)" \
-    && echo "3.  npm:       $(npm --version 2>&1)" \
-    && echo "4.  PHP:       $(php --version 2>&1 | head -1)" \
-    && echo "5.  Ruby:      $(ruby --version 2>&1)" \
-    && echo "6.  Go:        $(/usr/local/go/bin/go version 2>&1)" \
-    && echo "7.  Rust:      $(/root/.cargo/bin/rustc --version 2>&1)" \
-    && echo "8.  Java:      $(java -version 2>&1 | head -1)" \
-    && echo "9.  GCC:       $(gcc --version 2>&1 | head -1)" \
-    && echo "10. Perl:      $(perl -e 'print $^V' 2>&1)" \
-    && echo "11. Lua:       $(lua5.4 -v 2>&1)" \
-    && echo "12. Deno:      $(deno --version 2>&1 | head -1)" \
-    && echo "13. Bun:       $(bun --version 2>&1)" \
-    && echo "14. Elixir:    $(elixir --version 2>&1 | tail -1)" \
-    && echo "15. Kotlin:    $(kotlin -version 2>&1)" \
-    && echo "16. Scala:     $(scala -version 2>&1)" \
-    && echo "17. Zig:       $(zig version 2>&1)" \
-    && echo "18. PowerShell:$(pwsh --version 2>&1)" \
-    && echo "19. R:         $(R --version 2>&1 | head -1)" \
-    && echo "20. Julia:     $(julia --version 2>&1)" \
+    && echo "1.  Python:     $(python3 --version 2>&1)" \
+    && echo "2.  Node.js:    $(node --version 2>&1)" \
+    && echo "3.  npm:        $(npm --version 2>&1)" \
+    && echo "4.  PHP:        $(php --version 2>&1 | head -1)" \
+    && echo "5.  Ruby:       $(ruby --version 2>&1)" \
+    && echo "6.  Go:         $(/usr/local/go/bin/go version 2>&1)" \
+    && echo "7.  Rust:       $(/root/.cargo/bin/rustc --version 2>&1)" \
+    && echo "8.  Java:       $(java -version 2>&1 | head -1)" \
+    && echo "9.  GCC:        $(gcc --version 2>&1 | head -1)" \
+    && echo "10. Perl:       $(perl -e 'print $^V' 2>&1)" \
+    && echo "11. Lua:        $(lua5.4 -v 2>&1)" \
+    && echo "12. Deno:       $(/root/.deno/bin/deno --version 2>&1 | head -1)" \
+    && echo "13. Bun:        $(/root/.bun/bin/bun --version 2>&1)" \
+    && echo "14. Elixir:     $(elixir --version 2>&1 | tail -1)" \
+    && echo "15. Kotlin:     $(/opt/kotlinc/bin/kotlin -version 2>&1)" \
+    && echo "16. Scala:      $(scala -version 2>&1)" \
+    && echo "17. Zig:        $(/opt/zig/zig version 2>&1)" \
+    && echo "18. PowerShell: $(/opt/microsoft/powershell/7/pwsh --version 2>&1)" \
+    && echo "19. R:          $(R --version 2>&1 | head -1)" \
+    && echo "20. Julia:      $(/opt/julia/bin/julia --version 2>&1)" \
     && echo "============================================" \
     && echo "✅ ALL 19 LANGUAGES VERIFIED" \
     && echo "============================================"
