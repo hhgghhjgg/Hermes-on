@@ -31,18 +31,12 @@ if [ -n "$MODAL_TOKEN_ID" ] && [ -n "$MODAL_TOKEN_SECRET" ]; then
   echo "[MODAL] ✅ MODAL_ENVIRONMENT: ${MODAL_ENVIRONMENT:-main}"
   
   mkdir -p /root/.modal
-  echo "[MODAL] ✅ Config directory ready: /root/.modal"
-  
   export MODAL_TOKEN_ID
   export MODAL_TOKEN_SECRET
   export MODAL_ENVIRONMENT="${MODAL_ENVIRONMENT:-main}"
-  echo "[MODAL] ✅ Modal environment variables exported"
   MODAL_CLIENT_ENABLED=true
 else
   echo "[MODAL] ⚠️ Modal credentials not set!"
-  echo "[MODAL] MODAL_TOKEN_ID: $([ -n "$MODAL_TOKEN_ID" ] && echo SET || echo MISSING)"
-  echo "[MODAL] MODAL_TOKEN_SECRET: $([ -n "$MODAL_TOKEN_SECRET" ] && echo SET || echo MISSING)"
-  echo "[MODAL] Hermes will not be able to use Modal sandboxes"
 fi
 
 echo "=========================================="
@@ -101,7 +95,7 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
   if git fetch origin 2>&1; then
     echo "[ENTRYPOINT] ✅ Fetch successful"
     if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      # Save current state.db before reset (in case it has new data)
+      # Backup state.db
       if [ -f "$HERMES_DIR/state.db" ]; then
         CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
         if [ "$CURRENT_SIZE" -gt 1000 ]; then
@@ -110,28 +104,11 @@ if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
         fi
       fi
       
-      # ============================================================
-      # Backup config.yaml BEFORE git reset
-      # ============================================================
-      CONFIG_BACKUP=""
-      if [ -f "$HERMES_DIR/config.yaml" ]; then
-        CONFIG_BACKUP=$(cat "$HERMES_DIR/config.yaml")
-        echo "[ENTRYPOINT] 💾 Backed up current config.yaml"
-      fi
-      
       echo "[ENTRYPOINT] Resetting to origin/main (FULL RESTORE)..."
       git reset --hard origin/main 2>&1 || true
-      git clean -fd -e "state.db*" -e "*.pre-*" -e "config.yaml" 2>&1 || true
+      git clean -fd -e "state.db*" -e "*.pre-*" 2>&1 || true
       echo "[ENTRYPOINT] ✅ ALL DATA RESTORED from GitHub!"
       echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
-      
-      # ============================================================
-      # Restore config.yaml AFTER git reset (prevent overwrite)
-      # ============================================================
-      if [ -n "$CONFIG_BACKUP" ]; then
-        echo "$CONFIG_BACKUP" > "$HERMES_DIR/config.yaml"
-        echo "[ENTRYPOINT] ♻️ Restored config.yaml (protected from git reset)"
-      fi
       
     else
       echo "[ENTRYPOINT] ⚠️ No remote branch - starting fresh"
@@ -182,6 +159,68 @@ else
 fi
 
 # ============================================================
+# 🔥🔥🔥 OVERRIDE config.yaml with 9router (NEW!)
+# ============================================================
+echo "=========================================="
+echo "[CONFIG] Overriding config.yaml with 9router..."
+echo "=========================================="
+
+python3 << 'CONFIG_OVERRIDE_SCRIPT'
+import yaml
+import os
+
+config_path = '/data/.hermes/config.yaml'
+
+# Load existing config (or create new)
+if os.path.exists(config_path):
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f) or {}
+    print(f"[CONFIG] ✅ Loaded existing config.yaml")
+else:
+    config = {}
+    print(f"[CONFIG] ⚠️ No config.yaml, creating new")
+
+# ============================================================
+# Override providers and model sections with 9router
+# ============================================================
+config['providers'] = {
+    '9router': {
+        'base_url': 'https://9router-production-d138.up.railway.app/v1',
+        'api_key': 'sk-d042a2942b66660e-wjdw1y-30603948'
+    }
+}
+
+config['model'] = {
+    'default': 'hermes-fast',
+    'provider': 'custom:9router',
+    'base_url': 'https://9router-production-d138.up.railway.app/v1',
+    'api_key': 'sk-d042a2942b66660e-wjdw1y-30603948'
+}
+
+# Keep existing workspace, memory, user, soul if present
+if 'workspace' not in config:
+    config['workspace'] = '/data/.hermes/workspace'
+if 'memory' not in config:
+    config['memory'] = {
+        'enabled': True,
+        'path': '/data/.hermes/MEMORY.md'
+    }
+if 'user' not in config:
+    config['user'] = {'profile_path': '/data/.hermes/USER.md'}
+if 'soul' not in config:
+    config['soul'] = {'path': '/data/.hermes/SOUL.md'}
+
+# Save config
+with open(config_path, 'w') as f:
+    yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+print(f"[CONFIG] ✅ config.yaml updated with 9router")
+print(f"[CONFIG] ✅ Plugins/MCPs preserved (not touched)")
+CONFIG_OVERRIDE_SCRIPT
+
+echo "=========================================="
+
+# ============================================================
 # Create .gitignore if missing
 # ============================================================
 if [ ! -f ".gitignore" ]; then
@@ -220,9 +259,6 @@ fi
 
 SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
 echo "[ENTRYPOINT] Total skills: $SKILL_COUNT"
-
-echo "[ENTRYPOINT] Skill categories installed:"
-ls -1 "$HERMES_DIR/skills/" 2>/dev/null | grep -v "^$" | sort
 
 MEMORY_COUNT=$(ls "$HERMES_DIR"/MEMORY.md "$HERMES_DIR"/USER.md "$HERMES_DIR"/SOUL.md 2>/dev/null | wc -l)
 echo "[ENTRYPOINT] Core files (MEMORY/USER/SOUL): $MEMORY_COUNT"
@@ -267,55 +303,10 @@ if [ "$MODAL_CLIENT_ENABLED" = true ]; then
   sleep 4
   if kill -0 $MODAL_PID 2>/dev/null; then
     echo "[ENTRYPOINT] ✅ Modal Client is running on port 8090"
-    echo "[ENTRYPOINT] ✅ Hermes can create sandboxes via: http://localhost:8090"
-    echo "[ENTRYPOINT] ✅ Supported languages: PHP, Python, Node, Go, Java, Rust, etc."
   else
     echo "[ENTRYPOINT] ❌ Modal Client FAILED to start!"
-    echo "[ENTRYPOINT] Hermes will continue without Modal support"
     MODAL_PID=""
   fi
-  echo "=========================================="
-fi
-
-# ============================================================
-# Test Modal Connection (if credentials are set)
-# ============================================================
-if [ "$MODAL_CLIENT_ENABLED" = true ]; then
-  echo "=========================================="
-  echo "[MODAL] Verifying Modal SDK..."
-  echo "=========================================="
-
-  python3 << 'MODAL_TEST'
-import os
-import sys
-
-try:
-    import modal
-    
-    token_id = os.environ.get('MODAL_TOKEN_ID', '')
-    token_secret = os.environ.get('MODAL_TOKEN_SECRET', '')
-    environment = os.environ.get('MODAL_ENVIRONMENT', 'main')
-    
-    if not token_id or not token_secret:
-        print("[MODAL] ❌ Modal tokens not found in environment")
-        sys.exit(1)
-    
-    print(f"[MODAL] Token ID: {token_id[:10]}...")
-    print(f"[MODAL] Environment: {environment}")
-    
-    client = modal.Client.from_env()
-    print("[MODAL] ✅ Client created successfully")
-    print("[MODAL] ✅ Modal integration ready!")
-    
-except ImportError:
-    print("[MODAL] ❌ Modal SDK not installed!")
-    print("[MODAL] Run: pip install modal>=0.73.0")
-    sys.exit(1)
-except Exception as e:
-    print(f"[MODAL] ⚠️ Modal verification failed: {e}")
-    print("[MODAL] Modal Client will handle connection at runtime")
-MODAL_TEST
-
   echo "=========================================="
 fi
 
@@ -333,11 +324,8 @@ export HERMES_WEBUI_DEFAULT_WORKSPACE="$HERMES_DIR/workspace"
 export MODAL_CLIENT_URL="http://localhost:8090"
 
 echo "[ENTRYPOINT] HERMES_HOME: $HERMES_HOME"
-echo "[ENTRYPOINT] HERMES_WEBUI_STATE_DIR: $HERMES_WEBUI_STATE_DIR"
-echo "[ENTRYPOINT] HERMES_WORKSPACE: $HERMES_WORKSPACE"
 echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
 echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
-echo "[ENTRYPOINT] MODAL_CLIENT_URL: $MODAL_CLIENT_URL"
 
 # ============================================================
 # Graceful Shutdown Handler
@@ -381,8 +369,6 @@ cd /app/webui || exit 1
 
 if [ ! -f "server.py" ]; then
   echo "[ENTRYPOINT] ❌ server.py not found in /app/webui!"
-  echo "[ENTRYPOINT] Listing contents:"
-  ls -la /app/webui/ | head -20
   exit 1
 fi
 
