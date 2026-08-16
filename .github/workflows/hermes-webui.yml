@@ -1,0 +1,100 @@
+name: Hermes WebUI on GitHub Actions
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_interval:
+        description: 'Sync interval (seconds)'
+        required: false
+        default: '180'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Build Docker Image
+        run: |
+          docker build -t hermes-webui:latest .
+
+      - name: 3. Start Hermes WebUI Container
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+          HERMES_WEBUI_PASSWORD: ${{ secrets.HERMES_WEBUI_PASSWORD }}
+          HERMES_WEBUI_HOST: "0.0.0.0"
+          HERMES_WEBUI_PORT: "8787"
+          OMNIROUTE_URL: ${{ secrets.OMNIROUTE_URL }}
+          HERMES_WEBUI_DEFAULT_MODEL: ${{ secrets.HERMES_WEBUI_DEFAULT_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SYNC_INTERVAL: ${{ github.event.inputs.sync_interval || '180' }}
+        run: |
+          docker run -d \
+            --name hermes-webui \
+            -p 8787:8787 \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+            -e GITHUB_REPO="$GITHUB_REPO" \
+            -e HERMES_WEBUI_PASSWORD="$HERMES_WEBUI_PASSWORD" \
+            -e HERMES_WEBUI_HOST="$HERMES_WEBUI_HOST" \
+            -e HERMES_WEBUI_PORT="$HERMES_WEBUI_PORT" \
+            -e OMNIROUTE_URL="$OMNIROUTE_URL" \
+            -e HERMES_WEBUI_DEFAULT_MODEL="$HERMES_WEBUI_DEFAULT_MODEL" \
+            -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+            -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+            -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+            -e SYNC_INTERVAL="$SYNC_INTERVAL" \
+            hermes-webui:latest
+          
+          echo "Waiting for WebUI to start..."
+          sleep 30
+          
+          # Check if WebUI is running
+          if curl -f http://localhost:8787/health 2>/dev/null; then
+            echo "✅ Hermes WebUI is running!"
+          else
+            echo "❌ WebUI failed to start"
+            docker logs hermes-webui
+            exit 1
+          fi
+
+      - name: 4. Install Cloudflared
+        run: |
+          curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+
+      - name: 5. Start Cloudflare Tunnel
+        run: |
+          nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared.log 2>&1 &
+          sleep 15
+          
+          # Extract URL
+          URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -1)
+          
+          echo "=================================================="
+          echo "  >>> HERMES WEBUI READY! <<<"
+          echo "  URL: $URL"
+          echo "  Password: Set in GitHub Secrets"
+          echo "=================================================="
+
+      - name: 6. Keep Alive (6 Hours)
+        run: |
+          for i in $(seq 1 360); do
+            sleep 60
+            echo "[$i/360] Hermes WebUI running..."
+            
+            # Show logs every 10 minutes
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "--- Docker logs ---"
+              docker logs --tail 20 hermes-webui
+            fi
+          done
