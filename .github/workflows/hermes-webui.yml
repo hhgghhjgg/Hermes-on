@@ -73,26 +73,10 @@ jobs:
           curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
           
-      - name: 5. Start Cloudflare Tunnel with Auto-Restart
+      - name: 5. Start Cloudflare Tunnel
         run: |
-          # ایجاد wrapper script برای auto-restart cloudflared
-          cat > /tmp/cloudflared-wrapper.sh << 'EOF'
-          #!/bin/bash
-          while true; do
-            echo "[$(date)] Starting cloudflared..."
-            ./cloudflared tunnel --url http://localhost:8787 \
-              --no-tls-verify \
-              --retries 9999 \
-              --graceful-period 30s
-            echo "[$(date)] cloudflared died with exit code $?, restarting in 5 seconds..."
-            sleep 5
-          done
-          EOF
-          chmod +x /tmp/cloudflared-wrapper.sh
-          
-          nohup /tmp/cloudflared-wrapper.sh > /tmp/cloudflared.log 2>&1 &
-          
-          sleep 20
+          nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared.log 2>&1 &
+          sleep 15
           
           URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -1)
           
@@ -110,8 +94,13 @@ jobs:
             
             # چک کردن اینکه cloudflared هنوز اجرا می‌شه
             if ! pgrep -f cloudflared > /dev/null; then
-              echo "❌ cloudflared is NOT running! Restarting..."
-              nohup /tmp/cloudflared-wrapper.sh >> /tmp/cloudflared.log 2>&1 &
+              echo "❌ cloudflared died! Restarting..."
+              nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared-restart.log 2>&1 &
+              sleep 5
+              NEW_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared-restart.log | head -1)
+              echo "✅ cloudflared restarted. New URL might be: $NEW_URL"
+            else
+              echo "✅ cloudflared is running"
             fi
             
             # چک کردن اینکه داکر هنوز اجرا می‌شه
@@ -120,16 +109,16 @@ jobs:
               if docker ps -a | grep -q hermes-webui; then
                 echo "   Restarting container..."
                 docker start hermes-webui
-              else
-                echo "   Container completely gone! This is critical!"
               fi
+            else
+              echo "✅ Docker container is running"
             fi
             
-            # چک کردن اینکه پورت 8787 respond می‌ده
-            if ! curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
-              echo "⚠️  WebUI health check failed! Server might be down."
-            else
+            # چک کردن health
+            if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
               echo "✅ WebUI health check passed"
+            else
+              echo "⚠️  WebUI health check failed!"
             fi
             
             # هر 10 دقیقه یک بار لاگ‌های کامل
@@ -138,11 +127,10 @@ jobs:
               echo "========== Docker logs (last 20 lines) =========="
               docker logs --tail 20 hermes-webui
               echo ""
-              echo "========== Cloudflared status (last 10 lines) =========="
-              tail -10 /tmp/cloudflared.log
+              echo "========== Cloudflared status (last 5 lines) =========="
+              tail -5 /tmp/cloudflared.log
               echo ""
               echo "========== System resources =========="
-              echo "Memory usage:"
               docker stats hermes-webui --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
               echo ""
             fi
