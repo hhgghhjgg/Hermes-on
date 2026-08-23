@@ -1,4 +1,4 @@
-name: Hermes WebUI on GitHub Actions
+name: Hermes WebUI on GitHub Actions (with Docker)
 
 on:
   workflow_dispatch:
@@ -20,8 +20,10 @@ jobs:
       - name: 2. Build Docker Image
         run: |
           docker build -t hermes-webui:latest .
+          echo "✅ Image built"
+          docker images hermes-webui
           
-      - name: 3. Start Hermes WebUI Container
+      - name: 3. Start Hermes WebUI Container (with Docker Socket)
         env:
           GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
           GITHUB_REPO: ${{ secrets.HERMES_REPO }}
@@ -38,10 +40,18 @@ jobs:
           SYNC_INTERVAL: ${{ github.event.inputs.sync_interval || '180' }}
           
         run: |
+          # Get docker socket group ID for permission sharing
+          DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)
+          echo "🐳 Docker socket GID: $DOCKER_SOCK_GID"
+          
+          # Run Hermes with Docker socket bind-mounted (DooD)
           docker run -d \
             --restart on-failure \
             --name hermes-webui \
             -p 8787:8787 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /data:/data \
+            --group-add $DOCKER_SOCK_GID \
             -e GITHUB_TOKEN="$GITHUB_TOKEN" \
             -e GITHUB_REPO="$GITHUB_REPO" \
             -e HERMES_WEBUI_PASSWORD="$HERMES_WEBUI_PASSWORD" \
@@ -57,11 +67,25 @@ jobs:
             -e SYNC_INTERVAL="$SYNC_INTERVAL" \
             hermes-webui:latest
             
-          echo "Waiting for WebUI to start..."
+          echo "⏳ Waiting 30s for WebUI to start..."
           sleep 30
           
+          # Verify Docker works inside Hermes
+          echo ""
+          echo "🐳 Testing Docker access inside Hermes..."
+          docker exec hermes-webui docker --version || echo "❌ Docker CLI not found"
+          docker exec hermes-webui docker ps || echo "❌ Cannot access docker daemon"
+          
+          # Test creating a sibling container
+          echo ""
+          echo "🧪 Test: Creating a hello-world container via Hermes..."
+          docker exec hermes-webui docker run --rm hello-world || echo "⚠️ hello-world test failed"
+          
+          # Health check
+          echo ""
+          echo "🏥 Checking WebUI health..."
           if curl -f http://localhost:8787/health 2>/dev/null; then
-            echo "✅ Hermes WebUI is running!"
+            echo "✅ Hermes WebUI is running with Docker access!"
           else
             echo "❌ WebUI failed to start"
             docker logs hermes-webui
@@ -72,6 +96,7 @@ jobs:
         run: |
           curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
+          echo "✅ Cloudflared installed"
           
       - name: 5. Start Cloudflare Tunnel
         run: |
@@ -81,57 +106,103 @@ jobs:
           URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -1)
           
           echo "=================================================="
-          echo "  >>> HERMES WEBUI READY! <<<"
-          echo "  URL: $URL"
-          echo "  Password: Set in GitHub Secrets"
+          echo "  >>> HERMES WEBUI READY WITH DOCKER! <<<"
           echo "=================================================="
+          echo "  URL:      $URL"
+          echo "  Password: (set in GitHub Secrets)"
+          echo "  Docker:   ✅ Enabled (Docker-out-of-Docker)"
+          echo "=================================================="
+          echo ""
+          echo "🐳 Hermes can now run commands like:"
+          echo "   docker run -d postgres:16"
+          echo "   docker-compose up -d"
+          echo "   docker build -t myapp ."
+          echo ""
+          echo "📦 Current containers on host:"
+          docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
           
       - name: 6. Keep Alive with Monitoring (6 Hours)
         run: |
+          echo "🔄 Starting 6-hour monitoring loop..."
+          
           for i in $(seq 1 360); do
             sleep 60
-            echo "[$i/360] Hermes WebUI running..."
+            echo ""
+            echo "[$i/360] $(date '+%H:%M:%S') - Hermes WebUI monitoring..."
             
-            # چک کردن اینکه cloudflared هنوز اجرا می‌شه
+            # Check cloudflared
             if ! pgrep -f cloudflared > /dev/null; then
               echo "❌ cloudflared died! Restarting..."
               nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared-restart.log 2>&1 &
               sleep 5
               NEW_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared-restart.log | head -1)
-              echo "✅ cloudflared restarted. New URL might be: $NEW_URL"
+              echo "✅ cloudflared restarted. URL: $NEW_URL"
             else
               echo "✅ cloudflared is running"
             fi
             
-            # چک کردن اینکه داکر هنوز اجرا می‌شه
+            # Check Hermes container
             if ! docker ps | grep -q hermes-webui; then
-              echo "❌ Docker container is NOT running!"
-              if docker ps -a | grep -q hermes-webui; then
-                echo "   Restarting container..."
-                docker start hermes-webui
-              fi
+              echo "❌ Hermes container is NOT running!"
+              docker start hermes-webui 2>/dev/null || true
+              sleep 5
             else
-              echo "✅ Docker container is running"
+              echo "✅ Hermes container is running"
             fi
             
-            # چک کردن health
+            # Check Docker access inside Hermes
+            if docker exec hermes-webui docker info > /dev/null 2>&1; then
+              echo "✅ Docker access inside Hermes: OK"
+            else
+              echo "⚠️ Docker access inside Hermes: FAILED"
+            fi
+            
+            # Count sibling containers created by Hermes
+            SIBLING_COUNT=$(docker ps --filter "name!=hermes-webui" --format "{{.Names}}" | wc -l)
+            echo "📦 Sibling containers created by Hermes: $SIBLING_COUNT"
+            
+            # Health check
             if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
               echo "✅ WebUI health check passed"
             else
-              echo "⚠️  WebUI health check failed!"
+              echo "⚠️ WebUI health check failed!"
             fi
             
-            # هر 10 دقیقه یک بار لاگ‌های کامل
+            # Every 10 minutes show detailed stats
             if [ $((i % 10)) -eq 0 ]; then
               echo ""
               echo "========== Docker logs (last 20 lines) =========="
               docker logs --tail 20 hermes-webui
               echo ""
-              echo "========== Cloudflared status (last 5 lines) =========="
-              tail -5 /tmp/cloudflared.log
+              echo "========== All containers =========="
+              docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
               echo ""
               echo "========== System resources =========="
               docker stats hermes-webui --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
               echo ""
             fi
           done
+          
+          echo ""
+          echo "✅ 6-hour monitoring completed"
+          
+      - name: 7. Cleanup (always run)
+        if: always()
+        run: |
+          echo "🧹 Cleaning up containers created by Hermes..."
+          
+          # Stop all sibling containers (except hermes-webui)
+          SIBLINGS=$(docker ps --filter "name!=hermes-webui" --format "{{.Names}}")
+          if [ -n "$SIBLINGS" ]; then
+            echo "Stopping sibling containers: $SIBLINGS"
+            echo "$SIBLINGS" | xargs -r docker stop
+          fi
+          
+          # Remove all stopped containers (except hermes-webui)
+          STOPPED=$(docker ps -a --filter "name!=hermes-webui" --filter "status=exited" --format "{{.Names}}")
+          if [ -n "$STOPPED" ]; then
+            echo "Removing stopped containers: $STOPPED"
+            echo "$STOPPED" | xargs -r docker rm -f
+          fi
+          
+          echo "✅ Cleanup completed"
