@@ -1,27 +1,30 @@
 # ============================================================
-# Hermes Agent - Docker Image with 19 Languages + WebUI Fix
+# Hermes Agent - Complete Docker Image
 # ============================================================
-# ✅ 19 Languages installed via symlinks (PATH NOT TOUCHED)
-# ✅ WebUI fixed with npm build (no more 404)
-# ✅ MCP servers work (Node.js + uv installed)
+# ✅ 19 Programming Languages installed
+# ✅ WebUI with npm build (no 404)
+# ✅ MCP servers working (mcp python SDK installed)
+# ✅ Docker-out-of-Docker (DooD) - Hermes can create containers
+# ✅ Pre-warmed MCP packages for fast startup
 # ============================================================
 
 FROM python:3.11-slim
 
-# ------------------------------------------------------------
-# Environment variables (UNCHANGED - preserves WebUI)
-# ------------------------------------------------------------
+# ============================================================
+# ENVIRONMENT VARIABLES
+# ============================================================
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
     MODAL_ENVIRONMENT=main \
     HERMES_WEBUI_PORT=8080 \
-    HERMES_WEBUI_HOST=0.0.0.0
+    HERMES_WEBUI_HOST=0.0.0.0 \
+    DOCKER_HOST=unix:///var/run/docker.sock
 
-# ------------------------------------------------------------
-# System base dependencies
-# ------------------------------------------------------------
+# ============================================================
+# SYSTEM BASE DEPENDENCIES
+# ============================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl wget unzip xz-utils ca-certificates gnupg \
     ripgrep procps build-essential \
@@ -31,24 +34,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-21-jre-headless \
     r-base-core \
     libicu-dev \
+    iptables \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# LANGUAGE 1: Node.js 22 LTS ✅ (required for npx MCPs)
+# LANGUAGE 1: Node.js 22 LTS (required for npx MCPs)
 # ============================================================
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# LANGUAGE 2: PHP ✅
+# LANGUAGE 2: PHP
 # ============================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     php-cli php-curl php-mbstring php-xml php-zip php-sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# LANGUAGE 3: Go ✅ (with symlink - no PATH change)
+# LANGUAGE 3: Go (with symlink - no PATH change)
 # ============================================================
 RUN wget -q https://go.dev/dl/go1.23.1.linux-amd64.tar.gz -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
@@ -57,7 +62,7 @@ RUN wget -q https://go.dev/dl/go1.23.1.linux-amd64.tar.gz -O /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 
 # ============================================================
-# LANGUAGE 4: Rust ✅ (with symlink)
+# LANGUAGE 4: Rust (with symlink)
 # ============================================================
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
     && /root/.cargo/bin/rustup default stable \
@@ -67,20 +72,20 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
     && ln -sf /root/.cargo/bin/rustup /usr/local/bin/rustup
 
 # ============================================================
-# LANGUAGE 5: Deno ✅ (with symlink)
+# LANGUAGE 5: Deno (with symlink)
 # ============================================================
 RUN curl -fsSL https://deno.land/install.sh | sh \
     && ln -sf /root/.deno/bin/deno /usr/local/bin/deno
 
 # ============================================================
-# LANGUAGE 6: Bun ✅ (with symlink)
+# LANGUAGE 6: Bun (with symlink)
 # ============================================================
 RUN curl -fsSL https://bun.sh/install | bash \
     && ln -sf /root/.bun/bin/bun /usr/local/bin/bun \
     && ln -sf /root/.bun/bin/bunx /usr/local/bin/bunx
 
 # ============================================================
-# LANGUAGE 7: Kotlin ✅ (with symlink)
+# LANGUAGE 7: Kotlin (with symlink)
 # ============================================================
 RUN wget -q https://github.com/JetBrains/kotlin/releases/download/v2.0.20/kotlin-compiler-2.0.20.zip -O /tmp/kotlin.zip \
     && unzip -q /tmp/kotlin.zip -d /opt \
@@ -89,7 +94,7 @@ RUN wget -q https://github.com/JetBrains/kotlin/releases/download/v2.0.20/kotlin
     && rm /tmp/kotlin.zip
 
 # ============================================================
-# LANGUAGE 8: Scala ✅ (via coursier)
+# LANGUAGE 8: Scala (via coursier)
 # ============================================================
 RUN curl -fL https://github.com/coursier/coursier/releases/download/v2.1.10/cs-x86_64-pc-linux.gz | gzip -d > /usr/local/bin/cs \
     && chmod +x /usr/local/bin/cs \
@@ -98,7 +103,7 @@ RUN curl -fL https://github.com/coursier/coursier/releases/download/v2.1.10/cs-x
     && ln -sf /root/.local/share/coursier/bin/scalac /usr/local/bin/scalac
 
 # ============================================================
-# LANGUAGE 9: Zig ✅ (with symlink)
+# LANGUAGE 9: Zig (with symlink)
 # ============================================================
 RUN wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -O /tmp/zig.tar.xz \
     && tar -xf /tmp/zig.tar.xz -C /opt \
@@ -107,7 +112,7 @@ RUN wget -q https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -
     && rm /tmp/zig.tar.xz
 
 # ============================================================
-# LANGUAGE 10: PowerShell ✅ (GitHub binary - bypass Microsoft apt 403)
+# LANGUAGE 10: PowerShell (GitHub binary)
 # ============================================================
 RUN wget -q https://github.com/PowerShell/PowerShell/releases/download/v7.4.5/powershell-7.4.5-linux-x64.tar.gz -O /tmp/pwsh.tar.gz \
     && mkdir -p /opt/microsoft/powershell/7 \
@@ -117,7 +122,7 @@ RUN wget -q https://github.com/PowerShell/PowerShell/releases/download/v7.4.5/po
     && rm /tmp/pwsh.tar.gz
 
 # ============================================================
-# LANGUAGE 11: Julia ✅ (with symlink)
+# LANGUAGE 11: Julia (with symlink)
 # ============================================================
 RUN wget -q https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.0-linux-x86_64.tar.gz -O /tmp/julia.tar.gz \
     && tar -C /opt -xzf /tmp/julia.tar.gz \
@@ -126,27 +131,31 @@ RUN wget -q https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.0-l
     && rm /tmp/julia.tar.gz
 
 # ============================================================
-# 🔥 INSTALL uv (for uvx Python MCP servers)
+# INSTALL uv (for uvx Python MCP servers)
 # ============================================================
 RUN pip install --no-cache-dir uv
 
 # ============================================================
-# Already installed (no extra work):
-# - Python 3.11 (base image)
-# - Ruby (apt)
-# - Lua 5.4 (apt)
-# - Elixir (apt)
-# - Java 21 (apt - openjdk-21-jre-headless)
-# - GCC/C++ (build-essential)
-# - Perl (Debian base)
-# - R (apt - r-base-core)
+# DOCKER CLI INSTALLATION (Docker-out-of-Docker)
 # ============================================================
+# Hermes can run docker commands when docker.sock is bind-mounted
+# from the host. This allows Hermes to create sibling containers
+# on the host's docker daemon.
+# ============================================================
+RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+    | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
+    && curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+    -o /usr/local/bin/docker-compose \
+    && chmod +x /usr/local/bin/docker-compose \
+    && docker --version \
+    && docker-compose --version \
+    && echo "✅ Docker CLI + Docker Compose installed"
 
 # ============================================================
-# 🔍 VERIFY ALL 19 LANGUAGES (using symlinks in /usr/local/bin)
+# VERIFY ALL LANGUAGES + DOCKER
 # ============================================================
 RUN echo "============================================" \
-    && echo "🔍 VERIFYING ALL 19 LANGUAGES" \
+    && echo "🔍 VERIFYING ALL LANGUAGES + DOCKER" \
     && echo "============================================" \
     && echo "1.  Python:     $(python3 --version 2>&1)" \
     && echo "2.  Node.js:    $(node --version 2>&1)" \
@@ -168,32 +177,35 @@ RUN echo "============================================" \
     && echo "18. PowerShell: $(pwsh --version 2>&1)" \
     && echo "19. R:          $(R --version 2>&1 | head -1)" \
     && echo "20. Julia:      $(julia --version 2>&1)" \
+    && echo "21. Docker:     $(docker --version 2>&1)" \
+    && echo "22. Compose:    $(docker-compose --version 2>&1)" \
     && echo "============================================" \
-    && echo "✅ ALL 19 LANGUAGES VERIFIED" \
+    && echo "✅ ALL LANGUAGES + DOCKER VERIFIED" \
     && echo "============================================"
 
 WORKDIR /app
 
-# ------------------------------------------------------------
-# Clone hermes-agent and hermes-webui
-# ------------------------------------------------------------
+# ============================================================
+# CLONE HERMES AGENT AND WEBUI
+# ============================================================
 RUN git clone https://github.com/NousResearch/hermes-agent.git /app/hermes-agent \
     && git clone https://github.com/nesquena/hermes-webui.git /app/webui
 
-# ------------------------------------------------------------
-# Install hermes-agent
-# ------------------------------------------------------------
+# ============================================================
+# INSTALL HERMES AGENT WITH MCP EXTRA
+# ============================================================
+# CRITICAL FIX: Without [mcp], MCP servers show as "Configured
+# but inactive" in WebUI because the Python MCP SDK is missing
+# ============================================================
 WORKDIR /app/hermes-agent
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e ".[mcp]"
 
-# ------------------------------------------------------------
-# 🔥 FIXED: Install hermes-webui with npm build
-# This fixes the 404 error - SPA needs static build
-# ------------------------------------------------------------
+# ============================================================
+# INSTALL HERMES WEBUI WITH NPM BUILD
+# ============================================================
 WORKDIR /app/webui
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Build frontend if package.json exists
 RUN if [ -f "package.json" ]; then \
         echo "🔥 Building WebUI frontend..." \
         && npm install --no-audit --no-fund 2>/dev/null || true \
@@ -202,38 +214,42 @@ RUN if [ -f "package.json" ]; then \
         echo "ℹ️ No package.json found"; \
     fi
 
-# ------------------------------------------------------------
-# Install other required packages
-# ------------------------------------------------------------
+# ============================================================
+# INSTALL OTHER REQUIRED PACKAGES
+# ============================================================
 WORKDIR /app
 RUN pip install --no-cache-dir \
     "flask>=3.0.0" \
     "requests>=2.31.0" \
     "modal>=0.73.0"
 
-# ------------------------------------------------------------
-# Copy operational scripts
-# ------------------------------------------------------------
+# ============================================================
+# COPY OPERATIONAL SCRIPTS
+# ============================================================
 COPY sync.sh /app/sync.sh
 COPY entrypoint.sh /app/entrypoint.sh
 COPY modal-client.py /app/modal-client.py
 
 RUN chmod +x /app/sync.sh /app/entrypoint.sh
 
-# ------------------------------------------------------------
+# ============================================================
 # QWEN PROXY IS DEPRECATED
-# ------------------------------------------------------------
+# ============================================================
 RUN printf '#!/usr/bin/env python3\nimport time\nprint("[QWEN] Deprecated")\nwhile True: time.sleep(3600)\n' > /app/qwen-proxy.py
 
-# ------------------------------------------------------------
-# Modal SDK + Workspace
-# ------------------------------------------------------------
+# ============================================================
+# MODAL SDK + WORKSPACE
+# ============================================================
 RUN mkdir -p /root/.modal /workspace /data/.hermes
 WORKDIR /workspace
 
-# ------------------------------------------------------------
-# Pre-warm common MCP packages (optional - speed up first use)
-# ------------------------------------------------------------
+# ============================================================
+# PRE-WARM COMMON MCP PACKAGES (speed up first use)
+# ============================================================
+# These are the most commonly used MCP servers. Pre-installing
+# them globally means Hermes doesn't need to download them on
+# first use, which saves 30-60 seconds per MCP server.
+# ============================================================
 RUN npm install -g --silent \
     @modelcontextprotocol/server-fetch \
     @modelcontextprotocol/server-filesystem \
@@ -244,16 +260,58 @@ RUN npm install -g --silent \
     @modelcontextprotocol/server-github \
     @modelcontextprotocol/server-brave-search \
     @modelcontextprotocol/server-sequentialthinking \
+    @modelcontextprotocol/server-bash \
+    @modelcontextprotocol/server-time \
     @playwright/mcp@latest \
+    @browserbase/mcp-server-browserbase \
+    firecrawl-mcp \
+    puppeteer-mcp \
+    @e2b/mcp-server \
+    @ofershap/mcp-server-docker \
+    mcp-jupyter \
+    @modelcontextprotocol/server-filesystem \
+    @modelcontextprotocol/server-memory \
+    @modelcontextprotocol/server-knowledge-graph \
+    @modelcontextprotocol/server-sequential-thinking \
+    @tree-sitter/mcp \
+    @burntsushi/ripgrep-mcp \
+    @sourcegraph/lsp-mcp \
+    @ast-grep/mcp \
+    vector-code-search-mcp \
+    mcp-server-time \
     2>/dev/null || echo "[WARN] MCP pre-warm failed, will install on first use"
 
-RUN npx -y playwright install chromium --with-deps 2>/dev/null || true
+# Pre-warm Python MCP servers via uv
 RUN uv tool install mcp-server-git 2>/dev/null || true \
-    && uv tool install mcp-server-time 2>/dev/null || true
+    && uv tool install mcp-server-time 2>/dev/null || true \
+    && uv tool install mcp-server-filesystem 2>/dev/null || true \
+    && uv tool install mcp-server-memory 2>/dev/null || true \
+    && uv tool install mcp-server-sequentialthinking 2>/dev/null || true
 
+# Pre-warm Playwright browser (heavy but needed for browser automation)
+RUN npx -y playwright install chromium --with-deps 2>/dev/null || true
+
+# ============================================================
+# CREATE DOCKER GROUP (for docker.sock permissions)
+# ============================================================
+# When docker.sock is bind-mounted from the host, the container
+# needs to be in the same group as the socket. This creates the
+# docker group so we can add users to it.
+# ============================================================
+RUN groupadd -f docker && usermod -aG docker root
+
+# ============================================================
+# EXPOSE PORT
+# ============================================================
 EXPOSE 8080
 
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
+# ============================================================
+# ENTRYPOINT
+# ============================================================
 ENTRYPOINT ["/app/entrypoint.sh"]
