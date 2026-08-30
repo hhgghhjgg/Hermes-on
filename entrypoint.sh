@@ -1,20 +1,22 @@
 #!/bin/bash
 
+set -e
+
 echo "=========================================="
 echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
-DATA_DIR="/data"
-HERMES_DIR="$DATA_DIR/.hermes"
-
-mkdir -p "$HERMES_DIR"/{webui/sessions,skills,plans,workspace,profiles,crons,cache}
-
-echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
-echo "[ENTRYPOINT] B2_BUCKET: ${B2_BUCKET_NAME:-NOT SET}"
-echo "[ENTRYPOINT] B2_KEY_ID set: $([ -n "$B2_APPLICATION_KEY_ID" ] && echo YES || echo NO)"
+# ============================================================
+# Git Configuration
+# ============================================================
+git config --global user.email "hermes-bot@example.com"
+git config --global user.name "Hermes Bot"
+git config --global init.defaultBranch main
+git config --global pull.rebase false
+git config --global advice.detachedHead false
 
 # ============================================================
-# Modal (optional)
+# Modal Configuration
 # ============================================================
 echo "=========================================="
 echo "[MODAL] Checking Modal credentials..."
@@ -25,106 +27,139 @@ MODAL_PID=""
 
 if [ -n "$MODAL_TOKEN_ID" ] && [ -n "$MODAL_TOKEN_SECRET" ]; then
   echo "[MODAL] ✅ MODAL_TOKEN_ID: ${MODAL_TOKEN_ID:0:10}..."
+  echo "[MODAL] ✅ MODAL_TOKEN_SECRET: set (${#MODAL_TOKEN_SECRET} chars)"
+  echo "[MODAL] ✅ MODAL_ENVIRONMENT: ${MODAL_ENVIRONMENT:-main}"
+  
   mkdir -p /root/.modal
-  export MODAL_TOKEN_ID MODAL_TOKEN_SECRET MODAL_ENVIRONMENT="${MODAL_ENVIRONMENT:-main}"
+  export MODAL_TOKEN_ID
+  export MODAL_TOKEN_SECRET
+  export MODAL_ENVIRONMENT="${MODAL_ENVIRONMENT:-main}"
   MODAL_CLIENT_ENABLED=true
 else
-  echo "[MODAL] ⚠️ Modal credentials not set - skipping"
+  echo "[MODAL] ⚠️ Modal credentials not set!"
 fi
 
-# ============================================================
-# rclone setup
-# ============================================================
-echo "=========================================="
-echo "[B2] Installing and configuring rclone..."
 echo "=========================================="
 
-if ! command -v rclone &> /dev/null; then
-  echo "[B2] Installing rclone..."
-  curl -s https://rclone.org/install.sh | bash || true
-fi
+# ============================================================
+# Directory Setup
+# ============================================================
+DATA_DIR="/data"
+HERMES_DIR="$DATA_DIR/.hermes"
 
-echo "[B2] ✅ rclone version: $(rclone --version 2>/dev/null | head -1 || echo unknown)"
+mkdir -p "$HERMES_DIR"
+mkdir -p "$HERMES_DIR/webui/sessions"
+mkdir -p "$HERMES_DIR/skills"
+mkdir -p "$HERMES_DIR/plans"
+mkdir -p "$HERMES_DIR/workspace"
+mkdir -p "$HERMES_DIR/profiles"
+mkdir -p "$HERMES_DIR/crons"
+mkdir -p "$HERMES_DIR/cache"
 
-B2_ENABLED=false
-if [ -n "$B2_APPLICATION_KEY_ID" ] && [ -n "$B2_APPLICATION_KEY" ] && [ -n "$B2_BUCKET_NAME" ]; then
-  mkdir -p /root/.config/rclone
-  cat > /root/.config/rclone/rclone.conf << EOF
-[b2]
-type = b2
-account = ${B2_APPLICATION_KEY_ID}
-key = ${B2_APPLICATION_KEY}
-EOF
-  chmod 600 /root/.config/rclone/rclone.conf
-  echo "[B2] ✅ rclone configured"
-  
-  if rclone lsd "b2:${B2_BUCKET_NAME}" --max-depth 1 > /dev/null 2>&1; then
-    echo "[B2] ✅ B2 connection successful"
-    B2_ENABLED=true
+echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
+echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
+echo "[ENTRYPOINT] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
+
+# ============================================================
+# Portable file size function
+# ============================================================
+get_file_size() {
+  if [ -f "$1" ]; then
+    stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo "0"
   else
-    echo "[B2] ⚠️ B2 connection failed"
+    echo "0"
   fi
+}
+
+# ============================================================
+# Git Initialization
+# ============================================================
+cd "$HERMES_DIR"
+if [ ! -d ".git" ]; then
+  echo "[ENTRYPOINT] Initializing new git repo..."
+  git init -b main
 fi
 
 # ============================================================
-# RESTORE from B2 (با error handling کامل)
+# RESTORE EVERYTHING from GitHub
 # ============================================================
-echo "=========================================="
-echo "[B2] Restoring data from Backblaze B2..."
-echo "=========================================="
-
-cd "$HERMES_DIR" || exit 0
-
-if [ "$B2_ENABLED" = true ]; then
-  echo "[B2] Counting files in B2 bucket..."
-  
-  # شمارش بدون versioning (با --b2-versions=false)
-  B2_FILE_COUNT=$(rclone size "b2:${B2_BUCKET_NAME}" --json 2>/dev/null | grep -o '"count":[0-9]*' | cut -d: -f2 || echo "0")
-  echo "[B2] Found $B2_FILE_COUNT files in B2 bucket"
-  
-  if [ "$B2_FILE_COUNT" -gt 0 ] 2>/dev/null; then
-    # Backup state.db فعلی
-    if [ -f "$HERMES_DIR/state.db" ]; then
-      cp "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.pre-restore.$(date +%s)" 2>/dev/null || true
-    fi
-    
-    echo "[B2] 🚀 Starting restore (this may take a few minutes for 3931 files)..."
-    echo "[B2] Restoring to: $HERMES_DIR"
-    
-    # 🔥🔥🔥 مهم: || true اضافه شده تا حتی اگه fail شد هم ادامه بده
-    rclone sync "b2:${B2_BUCKET_NAME}" "$HERMES_DIR" \
-      --transfers=8 \
-      --checkers=16 \
-      --fast-list \
-      --b2-versions=false \
-      --exclude="*.tmp" \
-      --exclude="*.log" \
-      --exclude="node_modules/**" \
-      --exclude="__pycache__/**" \
-      --exclude="*.pyc" \
-      --retries=3 \
-      --low-level-retries=5 \
-      --stats=30s \
-      --stats-one-line \
-      --progress \
-      2>&1 | tail -30 || echo "[B2] ⚠️ Restore had warnings but continuing..."
-    
-    # Verify
-    LOCAL_COUNT=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
-    LOCAL_SIZE=$(du -sh "$HERMES_DIR" 2>/dev/null | cut -f1)
-    echo ""
-    echo "[B2] ✅ Restore completed!"
-    echo "[B2] 📊 Local files: $LOCAL_COUNT"
-    echo "[B2] 💾 Local size: $LOCAL_SIZE"
+if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
+  REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
+  if git remote get-url origin >/dev/null 2>&1; then
+    git remote set-url origin "$REMOTE_URL"
   else
-    echo "[B2] ⚠️ B2 bucket is empty - starting fresh"
+    git remote add origin "$REMOTE_URL"
+  fi
+
+  echo "[ENTRYPOINT] Fetching ALL data from GitHub..."
+  if git fetch origin 2>&1; then
+    echo "[ENTRYPOINT] ✅ Fetch successful"
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      # Backup state.db
+      if [ -f "$HERMES_DIR/state.db" ]; then
+        CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
+        if [ "$CURRENT_SIZE" -gt 1000 ]; then
+          cp "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.pre-reset.$(date +%s)" 2>/dev/null || true
+          echo "[ENTRYPOINT] Saved current state.db as backup"
+        fi
+      fi
+      
+      echo "[ENTRYPOINT] Resetting to origin/main (FULL RESTORE)..."
+      git reset --hard origin/main 2>&1 || true
+      git clean -fd -e "state.db*" -e "*.pre-*" 2>&1 || true
+      echo "[ENTRYPOINT] ✅ ALL DATA RESTORED from GitHub!"
+      echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
+      
+    else
+      echo "[ENTRYPOINT] ⚠️ No remote branch - starting fresh"
+      cat > .gitignore <<'EOF'
+*.key
+*.pem
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.log
+*.journal
+state.db-journal
+state.db-wal
+node_modules/
+.DS_Store
+*.pre-reset.*
+state.db.bak.*
+EOF
+      touch .keep
+      git add -A
+      git commit -m "Initial commit" 2>/dev/null || true
+      git branch -M main
+      git push -u origin main 2>&1 || true
+    fi
+  else
+    echo "[ENTRYPOINT] ⚠️ Fetch failed - using local data"
+  fi
+
+  # Restore state.db from largest backup if current is small
+  if [ -f "$HERMES_DIR/state.db" ]; then
+    CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
+    if [ "$CURRENT_SIZE" -lt 1000 ]; then
+      LARGEST_BACKUP=$(ls -S "$HERMES_DIR"/state.db.bak.* 2>/dev/null | head -1)
+      if [ -n "$LARGEST_BACKUP" ]; then
+        BACKUP_SIZE=$(get_file_size "$LARGEST_BACKUP")
+        if [ "$BACKUP_SIZE" -gt "$CURRENT_SIZE" ]; then
+          cp "$LARGEST_BACKUP" "$HERMES_DIR/state.db"
+          echo "[ENTRYPOINT] ✅ Restored state.db from $LARGEST_BACKUP"
+        fi
+      fi
+    fi
   fi
 else
-  echo "[B2] ⚠️ B2 not configured - starting fresh"
+  echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
 fi
 
 # ============================================================
-# config.yaml override with 9router
+# 🔥🔥🔥 OVERRIDE config.yaml with 9router (NEW!)
 # ============================================================
 echo "=========================================="
 echo "[CONFIG] Overriding config.yaml with 9router..."
@@ -136,6 +171,7 @@ import os
 
 config_path = '/data/.hermes/config.yaml'
 
+# Load existing config (or create new)
 if os.path.exists(config_path):
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f) or {}
@@ -144,6 +180,9 @@ else:
     config = {}
     print(f"[CONFIG] ⚠️ No config.yaml, creating new")
 
+# ============================================================
+# Override providers and model sections with 9router
+# ============================================================
 config['providers'] = {
     '9router': {
         'base_url': 'https://9router-production-d138.up.railway.app/v1',
@@ -158,72 +197,121 @@ config['model'] = {
     'api_key': 'sk-d042a2942b66660e-wjdw1y-30603948'
 }
 
+# Keep existing workspace, memory, user, soul if present
 if 'workspace' not in config:
     config['workspace'] = '/data/.hermes/workspace'
 if 'memory' not in config:
-    config['memory'] = {'enabled': True, 'path': '/data/.hermes/MEMORY.md'}
+    config['memory'] = {
+        'enabled': True,
+        'path': '/data/.hermes/MEMORY.md'
+    }
 if 'user' not in config:
     config['user'] = {'profile_path': '/data/.hermes/USER.md'}
 if 'soul' not in config:
     config['soul'] = {'path': '/data/.hermes/SOUL.md'}
 
+# Save config
 with open(config_path, 'w') as f:
     yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 print(f"[CONFIG] ✅ config.yaml updated with 9router")
+print(f"[CONFIG] ✅ Plugins/MCPs preserved (not touched)")
 CONFIG_OVERRIDE_SCRIPT
 
+echo "=========================================="
+
 # ============================================================
-# Final Summary
+# Create .gitignore if missing
+# ============================================================
+if [ ! -f ".gitignore" ]; then
+  cat > .gitignore <<'EOF'
+*.key
+*.pem
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+*.log
+*.journal
+state.db-journal
+state.db-wal
+node_modules/
+.DS_Store
+*.pre-reset.*
+state.db.bak.*
+EOF
+  echo "[ENTRYPOINT] .gitignore created"
+fi
+
+# ============================================================
+# Final State Summary
 # ============================================================
 echo "=========================================="
 echo "[ENTRYPOINT] Final state summary:"
 echo "=========================================="
 
 if [ -f "$HERMES_DIR/state.db" ]; then
-  echo "[ENTRYPOINT] state.db: $(stat -c%s "$HERMES_DIR/state.db" 2>/dev/null || stat -f%z "$HERMES_DIR/state.db" 2>/dev/null || echo 'unknown') bytes"
-else
-  echo "[ENTRYPOINT] state.db: NOT PRESENT"
+  FINAL_SIZE=$(get_file_size "$HERMES_DIR/state.db")
+  echo "[ENTRYPOINT] state.db: $FINAL_SIZE bytes"
 fi
 
-echo "[ENTRYPOINT] Skills: $(find "$HERMES_DIR/skills" -maxdepth 3 -name 'SKILL.md' 2>/dev/null | wc -l)"
-echo "[ENTRYPOINT] WebUI files: $(find "$HERMES_DIR/webui" -type f 2>/dev/null | wc -l)"
-echo "[ENTRYPOINT] Workspace files: $(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)"
-echo "[ENTRYPOINT] Total files: $(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)"
-echo "[ENTRYPOINT] Total size: $(du -sh "$HERMES_DIR" 2>/dev/null | cut -f1 || echo 'unknown')"
+SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] Total skills: $SKILL_COUNT"
+
+MEMORY_COUNT=$(ls "$HERMES_DIR"/MEMORY.md "$HERMES_DIR"/USER.md "$HERMES_DIR"/SOUL.md 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] Core files (MEMORY/USER/SOUL): $MEMORY_COUNT"
+
+WEBUI_FILES=$(find "$HERMES_DIR/webui" -type f 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] WebUI files: $WEBUI_FILES"
+
+WORKSPACE_FILES=$(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] Workspace files: $WORKSPACE_FILES"
+
+TOTAL_FILES=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
+echo "[ENTRYPOINT] Total files to sync: $TOTAL_FILES"
 echo "=========================================="
 
 # ============================================================
-# Start background sync
+# Start Background Sync
 # ============================================================
-SYNC_PID=""
-if [ "$B2_ENABLED" = true ]; then
-  echo "[ENTRYPOINT] Starting sync.sh (B2) in background..."
-  /app/sync.sh > /tmp/sync.log 2>&1 &
-  SYNC_PID=$!
-  sleep 2
-  if kill -0 $SYNC_PID 2>/dev/null; then
-    echo "[ENTRYPOINT] ✅ sync.sh (B2) is running (PID: $SYNC_PID)"
-  else
-    echo "[ENTRYPOINT] ⚠️ sync.sh failed to start"
-  fi
+echo "[ENTRYPOINT] Starting sync.sh in background..."
+/app/sync.sh 2>&1 &
+SYNC_PID=$!
+echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
+
+sleep 2
+if kill -0 $SYNC_PID 2>/dev/null; then
+  echo "[ENTRYPOINT] ✅ sync.sh is running"
+else
+  echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
 fi
 
 # ============================================================
-# Start Modal client (optional)
+# Start Modal Client API Server
 # ============================================================
-MODAL_PID=""
 if [ "$MODAL_CLIENT_ENABLED" = true ]; then
-  python3 /app/modal-client.py > /tmp/modal.log 2>&1 &
+  echo "=========================================="
+  echo "[ENTRYPOINT] Starting Modal Client API..."
+  echo "=========================================="
+
+  python3 /app/modal-client.py 2>&1 &
   MODAL_PID=$!
+  echo "[ENTRYPOINT] Modal Client PID: $MODAL_PID"
+
   sleep 4
   if kill -0 $MODAL_PID 2>/dev/null; then
-    echo "[ENTRYPOINT] ✅ Modal Client running on port 8090"
+    echo "[ENTRYPOINT] ✅ Modal Client is running on port 8090"
+  else
+    echo "[ENTRYPOINT] ❌ Modal Client FAILED to start!"
+    MODAL_PID=""
   fi
+  echo "=========================================="
 fi
 
 # ============================================================
-# Environment variables
+# Set Environment Variables
 # ============================================================
 export HERMES_HOME="$HERMES_DIR"
 export HERMES_WEBUI_STATE_DIR="$HERMES_DIR/webui"
@@ -232,28 +320,38 @@ export HERMES_WEBUI_HOST="${HERMES_WEBUI_HOST:-0.0.0.0}"
 export HERMES_WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 export HERMES_WORKSPACE="$HERMES_DIR/workspace"
 export HERMES_WEBUI_DEFAULT_WORKSPACE="$HERMES_DIR/workspace"
+
 export MODAL_CLIENT_URL="http://localhost:8090"
 
+echo "[ENTRYPOINT] HERMES_HOME: $HERMES_HOME"
+echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
+echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
+
 # ============================================================
-# Graceful shutdown
+# Graceful Shutdown Handler
 # ============================================================
 cleanup() {
   echo ""
-  echo "[ENTRYPOINT] Shutting down..."
-  [ -n "$SYNC_PID" ] && kill $SYNC_PID 2>/dev/null || true
-  [ -n "$MODAL_PID" ] && kill $MODAL_PID 2>/dev/null || true
-  
-  if [ "$B2_ENABLED" = true ]; then
-    echo "[ENTRYPOINT] Final B2 sync..."
-    rclone sync "$HERMES_DIR" "b2:${B2_BUCKET_NAME}" \
-      --transfers=4 \
-      --checkers=8 \
-      --b2-versions=false \
-      --exclude="*.tmp" \
-      --exclude="*.log" \
-      --retries=2 \
-      2>&1 | tail -5 || true
-    echo "[ENTRYPOINT] ✅ Final sync attempted"
+  echo "=========================================="
+  echo "[ENTRYPOINT] Shutting down - forcing final sync..."
+  echo "=========================================="
+
+  if [ -n "$SYNC_PID" ]; then
+    kill $SYNC_PID 2>/dev/null || true
+    wait $SYNC_PID 2>/dev/null || true
+  fi
+  if [ -n "$MODAL_PID" ]; then
+    kill $MODAL_PID 2>/dev/null || true
+    wait $MODAL_PID 2>/dev/null || true
+  fi
+
+  cd "$HERMES_DIR"
+  if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+    echo "[ENTRYPOINT] Committing final changes (ALL data)..."
+    git add -A
+    git commit -m "sync: final shutdown @ $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null || true
+    git push --force origin main 2>&1 || true
+    echo "[ENTRYPOINT] ✅ Final sync completed"
   fi
   exit 0
 }
@@ -264,14 +362,15 @@ trap cleanup SIGTERM SIGINT SIGQUIT SIGHUP
 # Start WebUI
 # ============================================================
 echo "=========================================="
-echo "[ENTRYPOINT] 🚀 Starting Hermes WebUI..."
+echo "[ENTRYPOINT] Starting Hermes WebUI..."
 echo "=========================================="
 
 cd /app/webui || exit 1
 
 if [ ! -f "server.py" ]; then
-  echo "[ENTRYPOINT] ❌ server.py not found!"
+  echo "[ENTRYPOINT] ❌ server.py not found in /app/webui!"
   exit 1
 fi
 
+echo "[ENTRYPOINT] ✅ Found server.py in /app/webui"
 exec python server.py 2>&1 | grep -v "agent session listing skipped" | grep -v "Token from GITHUB_TOKEN is not supported" | grep -v "Slow WebUI request" | grep -v "live provider-catalog rebuild exceeded"
