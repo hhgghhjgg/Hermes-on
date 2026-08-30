@@ -1,10 +1,11 @@
 # ============================================================
-# Hermes Agent - Complete Docker Image
+# Hermes Agent - Complete Docker Image with B2 Backup
 # ============================================================
 # ✅ 19 Programming Languages installed
 # ✅ WebUI with npm build (no 404)
 # ✅ MCP servers working (mcp python SDK installed)
 # ✅ Docker-out-of-Docker (DooD) - Hermes can create containers
+# ✅ rclone installed for Backblaze B2 backup
 # ✅ Pre-warmed MCP packages for fast startup
 # ============================================================
 
@@ -18,7 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
     MODAL_ENVIRONMENT=main \
-    HERMES_WEBUI_PORT=8080 \
+    HERMES_WEBUI_PORT=8787 \
     HERMES_WEBUI_HOST=0.0.0.0 \
     DOCKER_HOST=unix:///var/run/docker.sock
 
@@ -36,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libicu-dev \
     iptables \
     jq \
+    fuse \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
@@ -136,6 +138,13 @@ RUN wget -q https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.0-l
 RUN pip install --no-cache-dir uv
 
 # ============================================================
+# INSTALL rclone (for Backblaze B2 backup)
+# ============================================================
+RUN curl -s https://rclone.org/install.sh | bash \
+    && rclone version \
+    && echo "✅ rclone installed for B2 backup"
+
+# ============================================================
 # DOCKER CLI INSTALLATION (Docker-out-of-Docker)
 # ============================================================
 # Hermes can run docker commands when docker.sock is bind-mounted
@@ -152,10 +161,10 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
     && echo "✅ Docker CLI + Docker Compose installed"
 
 # ============================================================
-# VERIFY ALL LANGUAGES + DOCKER
+# VERIFY ALL LANGUAGES + DOCKER + rclone
 # ============================================================
 RUN echo "============================================" \
-    && echo "🔍 VERIFYING ALL LANGUAGES + DOCKER" \
+    && echo "🔍 VERIFYING ALL LANGUAGES + DOCKER + rclone" \
     && echo "============================================" \
     && echo "1.  Python:     $(python3 --version 2>&1)" \
     && echo "2.  Node.js:    $(node --version 2>&1)" \
@@ -179,8 +188,9 @@ RUN echo "============================================" \
     && echo "20. Julia:      $(julia --version 2>&1)" \
     && echo "21. Docker:     $(docker --version 2>&1)" \
     && echo "22. Compose:    $(docker-compose --version 2>&1)" \
+    && echo "23. rclone:     $(rclone version 2>&1 | head -1)" \
     && echo "============================================" \
-    && echo "✅ ALL LANGUAGES + DOCKER VERIFIED" \
+    && echo "✅ ALL LANGUAGES + DOCKER + rclone VERIFIED" \
     && echo "============================================"
 
 WORKDIR /app
@@ -269,16 +279,12 @@ RUN npm install -g --silent \
     @e2b/mcp-server \
     @ofershap/mcp-server-docker \
     mcp-jupyter \
-    @modelcontextprotocol/server-filesystem \
-    @modelcontextprotocol/server-memory \
     @modelcontextprotocol/server-knowledge-graph \
-    @modelcontextprotocol/server-sequential-thinking \
     @tree-sitter/mcp \
     @burntsushi/ripgrep-mcp \
     @sourcegraph/lsp-mcp \
     @ast-grep/mcp \
     vector-code-search-mcp \
-    mcp-server-time \
     2>/dev/null || echo "[WARN] MCP pre-warm failed, will install on first use"
 
 # Pre-warm Python MCP servers via uv
@@ -303,13 +309,13 @@ RUN groupadd -f docker && usermod -aG docker root
 # ============================================================
 # EXPOSE PORT
 # ============================================================
-EXPOSE 8080
+EXPOSE 8787
 
 # ============================================================
 # HEALTH CHECK
 # ============================================================
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/ || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8787/health || curl -f http://localhost:8787/ || exit 1
 
 # ============================================================
 # ENTRYPOINT
