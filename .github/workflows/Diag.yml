@@ -1,0 +1,360 @@
+name: 🔍 Hermes Diagnostic (Read-Only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: 📥 1. Checkout Repository
+        uses: actions/checkout@v4
+        
+      - name: 🏗️ 2. Build Docker Image (no push)
+        run: |
+          echo "Building Docker image..."
+          docker build -t hermes-diagnostic:latest . 2>&1 | tee build.log
+          echo ""
+          echo "=== BUILD COMPLETE ==="
+          docker images hermes-diagnostic
+          
+      - name: 🚀 3. Start Container with Full Logging
+        env:
+          GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
+          GITHUB_REPO: ${{ secrets.HERMES_REPO }}
+          HERMES_WEBUI_PASSWORD: ${{ secrets.HERMES_WEBUI_PASSWORD }}
+          HERMES_WEBUI_HOST: "0.0.0.0"
+          HERMES_WEBUI_PORT: "8787"
+          OMNIROUTE_URL: ${{ secrets.OMNIROUTE_URL }}
+          HERMES_WEBUI_DEFAULT_MODEL: ${{ secrets.HERMES_WEBUI_DEFAULT_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SYNC_INTERVAL: "999999"
+        run: |
+          mkdir -p diagnostic-logs
+          
+          echo "=== Starting container with NO auto-restart ===" | tee diagnostic-logs/00-start.log
+          
+          # Start container without --restart (so it dies on crash)
+          docker run -d \
+            --name hermes-diag \
+            --restart "no" \
+            -p 8787:8787 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /data:/data \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+            -e GITHUB_REPO="$GITHUB_REPO" \
+            -e HERMES_WEBUI_PASSWORD="$HERMES_WEBUI_PASSWORD" \
+            -e HERMES_WEBUI_HOST="$HERMES_WEBUI_HOST" \
+            -e HERMES_WEBUI_PORT="$HERMES_WEBUI_PORT" \
+            -e OMNIROUTE_URL="$OMNIROUTE_URL" \
+            -e HERMES_WEBUI_DEFAULT_MODEL="$HERMES_WEBUI_DEFAULT_MODEL" \
+            -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+            -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+            -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+            -e SYNC_INTERVAL="$SYNC_INTERVAL" \
+            hermes-diagnostic:latest
+            
+          echo "Container started. Waiting 45s for startup..." | tee -a diagnostic-logs/00-start.log
+          sleep 45
+          
+      - name: 📊 4. Container Status Check
+        if: always()
+        run: |
+          echo "=== CONTAINER STATUS ===" | tee diagnostic-logs/01-container-status.log
+          docker ps -a --filter name=hermes-diag | tee -a diagnostic-logs/01-container-status.log
+          echo "" | tee -a diagnostic-logs/01-container-status.log
+          echo "=== CONTAINER INSPECT ===" | tee -a diagnostic-logs/01-container-status.log
+          docker inspect hermes-diag --format '{{json .State}}' 2>&1 | tee -a diagnostic-logs/01-container-status.log
+          echo "" | tee -a diagnostic-logs/01-container-status.log
+          echo "=== EXIT CODE ===" | tee -a diagnostic-logs/01-container-status.log
+          docker inspect hermes-diag --format '{{.State.ExitCode}}' 2>&1 | tee -a diagnostic-logs/01-container-status.log
+          echo "" | tee -a diagnostic-logs/01-container-status.log
+          echo "=== ERROR MESSAGE ===" | tee -a diagnostic-logs/01-container-status.log
+          docker inspect hermes-diag --format '{{.State.Error}}' 2>&1 | tee -a diagnostic-logs/01-container-status.log
+          
+      - name: 📜 5. Full Docker Logs (NO grep filters!)
+        if: always()
+        run: |
+          echo "=== FULL CONTAINER LOGS (last 500 lines) ===" > diagnostic-logs/02-full-logs.log
+          docker logs --tail 500 hermes-diag 2>&1 | tee -a diagnostic-logs/02-full-logs.log
+          echo "" >> diagnostic-logs/02-full-logs.log
+          echo "=== ALL CONTAINER LOGS (no limit) ===" >> diagnostic-logs/02-full-logs.log
+          docker logs hermes-diag 2>&1 | tee -a diagnostic-logs/02-full-logs.log
+          
+      - name: 💾 6. Disk Usage Analysis
+        if: always()
+        run: |
+          echo "=== DISK USAGE IN CONTAINER ===" > diagnostic-logs/03-disk-usage.log
+          docker exec hermes-diag df -h 2>&1 | tee -a diagnostic-logs/03-disk-usage.log
+          echo "" >> diagnostic-logs/03-disk-usage.log
+          echo "=== /data/.hermes directory ===" >> diagnostic-logs/03-disk-usage.log
+          docker exec hermes-diag du -sh /data/.hermes/* 2>&1 | tee -a diagnostic-logs/03-disk-usage.log
+          echo "" >> diagnostic-logs/03-disk-usage.log
+          echo "=== Files > 50MB in /data/.hermes ===" >> diagnostic-logs/03-disk-usage.log
+          docker exec hermes-diag find /data/.hermes -type f -size +50M -exec ls -lh {} \; 2>&1 | tee -a diagnostic-logs/03-disk-usage.log
+          echo "" >> diagnostic-logs/03-disk-usage.log
+          echo "=== Files > 10MB in /data/.hermes ===" >> diagnostic-logs/03-disk-usage.log
+          docker exec hermes-diag find /data/.hermes -type f -size +10M -exec ls -lh {} \; 2>&1 | tee -a diagnostic-logs/03-disk-usage.log
+          echo "" >> diagnostic-logs/03-disk-usage.log
+          echo "=== Workspace directory ===" >> diagnostic-logs/03-disk-usage.log
+          docker exec hermes-diag du -sh /data/.hermes/workspace/* 2>&1 | tee -a diagnostic-logs/03-disk-usage.log
+          
+      - name: 🗃️ 7. State.db Analysis
+        if: always()
+        run: |
+          echo "=== state.db file info ===" > diagnostic-logs/04-state-db.log
+          docker exec hermes-diag ls -lh /data/.hermes/state.db 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          docker exec hermes-diag ls -lh /data/.hermes/state.db.* 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          echo "" >> diagnostic-logs/04-state-db.log
+          echo "=== state.db tables ===" >> diagnostic-logs/04-state-db.log
+          docker exec hermes-diag sqlite3 /data/.hermes/state.db ".tables" 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          echo "" >> diagnostic-logs/04-state-db.log
+          echo "=== state.db schema ===" >> diagnostic-logs/04-state-db.log
+          docker exec hermes-diag sqlite3 /data/.hermes/state.db ".schema" 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          echo "" >> diagnostic-logs/04-state-db.log
+          echo "=== Row counts ===" >> diagnostic-logs/04-state-db.log
+          docker exec hermes-diag sh -c 'for t in $(sqlite3 /data/.hermes/state.db ".tables"); do echo "$t: $(sqlite3 /data/.hermes/state.db "SELECT COUNT(*) FROM $t")"; done' 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          echo "" >> diagnostic-logs/04-state-db.log
+          echo "=== webui/state.db (if exists) ===" >> diagnostic-logs/04-state-db.log
+          docker exec hermes-diag ls -lh /data/.hermes/webui/state.db 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          docker exec hermes-diag sqlite3 /data/.hermes/webui/state.db ".tables" 2>&1 | tee -a diagnostic-logs/04-state-db.log
+          
+      - name: 📁 8. config.yaml Analysis
+        if: always()
+        run: |
+          echo "=== config.yaml (sanitized, no API keys) ===" > diagnostic-logs/05-config.log
+          docker exec hermes-diag sh -c 'cat /data/.hermes/config.yaml | sed -E "s/(api_key|API_KEY|token|TOKEN|password|PASSWORD|secret|SECRET):.*$/\1: [REDACTED]/gi"' 2>&1 | tee -a diagnostic-logs/05-config.log
+          echo "" >> diagnostic-logs/05-config.log
+          echo "=== config.yaml size ===" >> diagnostic-logs/05-config.log
+          docker exec hermes-diag ls -lh /data/.hermes/config.yaml 2>&1 | tee -a diagnostic-logs/05-config.log
+          echo "" >> diagnostic-logs/05-config.log
+          echo "=== Other config files ===" >> diagnostic-logs/05-config.log
+          docker exec hermes-diag find /data/.hermes -name "*.yaml" -o -name "*.yml" -o -name "*.json" 2>&1 | tee -a diagnostic-logs/05-config.log
+          
+      - name: 🐍 9. Python Environment Check
+        if: always()
+        run: |
+          echo "=== Python version ===" > diagnostic-logs/06-python.log
+          docker exec hermes-diag python3 --version 2>&1 | tee -a diagnostic-logs/06-python.log
+          echo "" >> diagnostic-logs/06-python.log
+          echo "=== hermes-agent version ===" >> diagnostic-logs/06-python.log
+          docker exec hermes-diag python3 -c "import hermes_agent; print(hermes_agent.__version__)" 2>&1 | tee -a diagnostic-logs/06-python.log
+          echo "" >> diagnostic-logs/06-python.log
+          echo "=== Critical imports test ===" >> diagnostic-logs/06-python.log
+          docker exec hermes-diag python3 -c "
+          import sys
+          modules = ['mcp', 'flask', 'fastapi', 'uvicorn', 'requests', 'yaml', 'sqlalchemy']
+          for m in modules:
+              try:
+                  mod = __import__(m)
+                  print(f'✅ {m}: {getattr(mod, \"__version__\", \"installed\")}')
+              except Exception as e:
+                  print(f'❌ {m}: {e}')
+          " 2>&1 | tee -a diagnostic-logs/06-python.log
+          echo "" >> diagnostic-logs/06-python.log
+          echo "=== server.py import test ===" >> diagnostic-logs/06-python.log
+          docker exec hermes-diag sh -c 'cd /app/webui && python3 -c "import server" 2>&1' | tee -a diagnostic-logs/06-python.log
+          echo "" >> diagnostic-logs/06-python.log
+          echo "=== Installed Python packages ===" >> diagnostic-logs/06-python.log
+          docker exec hermes-diag pip list 2>&1 | tee -a diagnostic-logs/06-python.log
+          
+      - name: 🔧 10. Git Status in /data/.hermes
+        if: always()
+        run: |
+          echo "=== Git status in /data/.hermes ===" > diagnostic-logs/07-git.log
+          docker exec hermes-diag sh -c 'cd /data/.hermes && git status' 2>&1 | tee -a diagnostic-logs/07-git.log
+          echo "" >> diagnostic-logs/07-git.log
+          echo "=== Last 10 commits ===" >> diagnostic-logs/07-git.log
+          docker exec hermes-diag sh -c 'cd /data/.hermes && git log --oneline -10' 2>&1 | tee -a diagnostic-logs/07-git.log
+          echo "" >> diagnostic-logs/07-git.log
+          echo "=== Last commit stats ===" >> diagnostic-logs/07-git.log
+          docker exec hermes-diag sh -c 'cd /data/.hermes && git log -1 --stat' 2>&1 | tee -a diagnostic-logs/07-git.log
+          echo "" >> diagnostic-logs/07-git.log
+          echo "=== Unpushed commits ===" >> diagnostic-logs/07-git.log
+          docker exec hermes-diag sh -c 'cd /data/.hermes && git log origin/main..HEAD --oneline' 2>&1 | tee -a diagnostic-logs/07-git.log
+          echo "" >> diagnostic-logs/07-git.log
+          echo "=== Remote info ===" >> diagnostic-logs/07-git.log
+          docker exec hermes-diag sh -c 'cd /data/.hermes && git remote -v' 2>&1 | tee -a diagnostic-logs/07-git.log
+          echo "" >> diagnostic-logs/07-git.log
+          echo "=== Stash list ===" >> diagnostic-logs/07-git.log
+          docker exec hermes-diag sh -c 'cd /data/.hermes && git stash list' 2>&1 | tee -a diagnostic-logs/07-git.log
+          
+      - name: 🌐 11. GitHub Repo Size Check
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
+          GITHUB_REPO: ${{ secrets.HERMES_REPO }}
+        run: |
+          echo "=== GitHub Repo Info ===" > diagnostic-logs/08-github-repo.log
+          curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPO" | \
+            python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          print(f'Repo: {data.get(\"full_name\", \"N/A\")}')
+          print(f'Size (KB): {data.get(\"size\", \"N/A\")}')
+          print(f'Size (MB): {data.get(\"size\", 0) / 1024:.2f}')
+          print(f'Default branch: {data.get(\"default_branch\", \"N/A\")}')
+          print(f'Private: {data.get(\"private\", \"N/A\")}')
+          print(f'Pushed at: {data.get(\"pushed_at\", \"N/A\")}')
+          " 2>&1 | tee -a diagnostic-logs/08-github-repo.log
+          echo "" >> diagnostic-logs/08-github-repo.log
+          echo "=== GitHub rate limit ===" >> diagnostic-logs/08-github-repo.log
+          curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/rate_limit" | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d['rate'], indent=2))" 2>&1 | tee -a diagnostic-logs/08-github-repo.log
+          
+      - name: 🎯 12. Health Check Attempts
+        if: always()
+        run: |
+          echo "=== Health check attempts ===" > diagnostic-logs/09-health.log
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i:" >> diagnostic-logs/09-health.log
+            curl -v http://localhost:8787/health 2>&1 | tee -a diagnostic-logs/09-health.log
+            echo "" >> diagnostic-logs/09-health.log
+            sleep 3
+          done
+          echo "" >> diagnostic-logs/09-health.log
+          echo "=== Port 8787 listening ===" >> diagnostic-logs/09-health.log
+          docker exec hermes-diag sh -c 'ss -tlnp | grep 8787' 2>&1 | tee -a diagnostic-logs/09-health.log
+          echo "" >> diagnostic-logs/09-health.log
+          echo "=== Processes in container ===" >> diagnostic-logs/09-health.log
+          docker exec hermes-diag ps aux 2>&1 | tee -a diagnostic-logs/09-health.log
+          
+      - name: 📚 13. Memory & Resource Usage
+        if: always()
+        run: |
+          echo "=== Docker stats ===" > diagnostic-logs/10-resources.log
+          docker stats hermes-diag --no-stream 2>&1 | tee -a diagnostic-logs/10-resources.log
+          echo "" >> diagnostic-logs/10-resources.log
+          echo "=== /proc/meminfo ===" >> diagnostic-logs/10-resources.log
+          docker exec hermes-diag cat /proc/meminfo 2>&1 | tee -a diagnostic-logs/10-resources.log
+          echo "" >> diagnostic-logs/10-resources.log
+          echo "=== /proc/cpuinfo summary ===" >> diagnostic-logs/10-resources.log
+          docker exec hermes-diag sh -c 'grep -E "model name|processor" /proc/cpuinfo | head -10' 2>&1 | tee -a diagnostic-logs/10-resources.log
+          
+      - name: 🔍 14. MCP & A2A Status
+        if: always()
+        run: |
+          echo "=== Trying hermes CLI commands ===" > diagnostic-logs/11-hermes-cli.log
+          docker exec hermes-diag hermes --version 2>&1 | tee -a diagnostic-logs/11-hermes-cli.log
+          echo "" >> diagnostic-logs/11-hermes-cli.log
+          echo "=== hermes mcp list ===" >> diagnostic-logs/11-hermes-cli.log
+          docker exec hermes-diag hermes mcp list 2>&1 | tee -a diagnostic-logs/11-hermes-cli.log
+          echo "" >> diagnostic-logs/11-hermes-cli.log
+          echo "=== hermes plugins list ===" >> diagnostic-logs/11-hermes-cli.log
+          docker exec hermes-diag hermes plugins list 2>&1 | tee -a diagnostic-logs/11-hermes-cli.log
+          echo "" >> diagnostic-logs/11-hermes-cli.log
+          echo "=== hermes profile list ===" >> diagnostic-logs/11-hermes-cli.log
+          docker exec hermes-diag hermes profile list 2>&1 | tee -a diagnostic-logs/11-hermes-cli.log
+          echo "" >> diagnostic-logs/11-hermes-cli.log
+          echo "=== hermes gateway status ===" >> diagnostic-logs/11-hermes-cli.log
+          docker exec hermes-diag hermes gateway status 2>&1 | tee -a diagnostic-logs/11-hermes-cli.log
+          echo "" >> diagnostic-logs/11-hermes-cli.log
+          echo "=== hermes skills list ===" >> diagnostic-logs/11-hermes-cli.log
+          docker exec hermes-diag hermes skills list 2>&1 | tee -a diagnostic-logs/11-hermes-cli.log | head -50
+          
+      - name: 🗂️ 15. File Listing in Key Directories
+        if: always()
+        run: |
+          echo "=== /data/.hermes/ top level ===" > diagnostic-logs/12-files.log
+          docker exec hermes-diag ls -la /data/.hermes/ 2>&1 | tee -a diagnostic-logs/12-files.log
+          echo "" >> diagnostic-logs/12-files.log
+          echo "=== /data/.hermes/workspace/ ===" >> diagnostic-logs/12-files.log
+          docker exec hermes-diag ls -la /data/.hermes/workspace/ 2>&1 | tee -a diagnostic-logs/12-files.log
+          echo "" >> diagnostic-logs/12-files.log
+          echo "=== /data/.hermes/skills/ (first 20) ===" >> diagnostic-logs/12-files.log
+          docker exec hermes-diag ls /data/.hermes/skills/ 2>&1 | head -20 | tee -a diagnostic-logs/12-files.log
+          echo "" >> diagnostic-logs/12-files.log
+          echo "=== /data/.hermes/webui/ ===" >> diagnostic-logs/12-files.log
+          docker exec hermes-diag ls -la /data/.hermes/webui/ 2>&1 | tee -a diagnostic-logs/12-files.log
+          echo "" >> diagnostic-logs/12-files.log
+          echo "=== /data/.hermes/profiles/ ===" >> diagnostic-logs/12-files.log
+          docker exec hermes-diag ls -la /data/.hermes/profiles/ 2>&1 | tee -a diagnostic-logs/12-files.log
+          
+      - name: 📦 16. Upload All Diagnostic Logs as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-diagnostic-logs
+          path: diagnostic-logs/
+          retention-days: 7
+          
+      - name: 📄 17. Create Summary
+        if: always()
+        run: |
+          cat > diagnostic-logs/00-SUMMARY.md << 'EOF'
+          # 🔍 Hermes Diagnostic Summary
+          
+          ## Files in this artifact:
+          
+          | File | Contents |
+          |------|----------|
+          | `00-SUMMARY.md` | This file |
+          | `00-start.log` | Container startup info |
+          | `01-container-status.log` | Container state, exit code, error message |
+          | `02-full-logs.log` | **Complete Docker logs (no filters!)** |
+          | `03-disk-usage.log` | Disk usage, large files |
+          | `04-state-db.log` | state.db tables, schema, row counts |
+          | `05-config.log` | config.yaml (sanitized) |
+          | `06-python.log` | Python env, imports, packages |
+          | `07-git.log` | Git status, commits, unpushed |
+          | `08-github-repo.log` | **GitHub repo size (this is likely the culprit!)** |
+          | `09-health.log` | Health check attempts, port status |
+          | `10-resources.log` | Memory, CPU usage |
+          | `11-hermes-cli.log` | hermes CLI commands output |
+          | `12-files.log` | File listings |
+          | `build.log` | Docker build output |
+          
+          ## Key things to check:
+          
+          1. **`02-full-logs.log`** — The ACTUAL error (no grep filters!)
+          2. **`08-github-repo.log`** — Is repo > 1GB?
+          3. **`01-container-status.log`** — Exit code (1 = Python crash)
+          4. **`03-disk-usage.log`** — Files > 50MB
+          5. **`04-state-db.log`** — Schema issues
+          6. **`07-git.log`** — Unpushed commits?
+          
+          ## Most likely culprits:
+          
+          - 🔴 **GitHub repo > 1GB** (blocked by GitHub)
+          - 🔴 **state.db schema mismatch** (from old backup)
+          - 🔴 **Workspace full of large files** (200MB file issue)
+          - 🟡 **Python import error** (mcp module missing)
+          - 🟡 **Config corruption** (from 9router override)
+          EOF
+          
+          cat diagnostic-logs/00-SUMMARY.md
+          
+      - name: 📦 18. Upload Summary Again (Easy Access)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-diagnostic-SUMMARY
+          path: diagnostic-logs/00-SUMMARY.md
+          retention-days: 7
+          
+      - name: 🛑 19. DO NOT CLEANUP - Leave Container Running for Inspection
+        if: always()
+        run: |
+          echo "=== DIAGNOSTIC COMPLETE ==="
+          echo ""
+          echo "Container 'hermes-diag' is left running for inspection."
+          echo "Runner will clean up when workflow ends."
+          echo ""
+          echo "=== Final container state ==="
+          docker ps -a --filter name=hermes-diag
+          echo ""
+          echo "=== Next steps ==="
+          echo "1. Download the 'hermes-diagnostic-logs' artifact"
+          echo "2. Read 00-SUMMARY.md first"
+          echo "3. Check 02-full-logs.log for the actual error"
+          echo "4. Check 08-github-repo.log for repo size"
