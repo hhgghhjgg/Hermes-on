@@ -7,13 +7,23 @@ echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
 # ============================================================
-# Git Configuration
+# Directory Setup
 # ============================================================
-git config --global user.email "hermes-bot@example.com"
-git config --global user.name "Hermes Bot"
-git config --global init.defaultBranch main
-git config --global pull.rebase false
-git config --global advice.detachedHead false
+DATA_DIR="/data"
+HERMES_DIR="$DATA_DIR/.hermes"
+
+mkdir -p "$HERMES_DIR"
+mkdir -p "$HERMES_DIR/webui/sessions"
+mkdir -p "$HERMES_DIR/skills"
+mkdir -p "$HERMES_DIR/plans"
+mkdir -p "$HERMES_DIR/workspace"
+mkdir -p "$HERMES_DIR/profiles"
+mkdir -p "$HERMES_DIR/crons"
+mkdir -p "$HERMES_DIR/cache"
+
+echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
+echo "[ENTRYPOINT] B2_BUCKET: ${B2_BUCKET_NAME:-NOT SET}"
+echo "[ENTRYPOINT] B2_KEY_ID set: $([ -n "$B2_APPLICATION_KEY_ID" ] && echo YES || echo NO)"
 
 # ============================================================
 # Modal Configuration
@@ -42,23 +52,50 @@ fi
 echo "=========================================="
 
 # ============================================================
-# Directory Setup
+# Install and Configure rclone for Backblaze B2
 # ============================================================
-DATA_DIR="/data"
-HERMES_DIR="$DATA_DIR/.hermes"
+echo "=========================================="
+echo "[B2] Installing and configuring rclone..."
+echo "=========================================="
 
-mkdir -p "$HERMES_DIR"
-mkdir -p "$HERMES_DIR/webui/sessions"
-mkdir -p "$HERMES_DIR/skills"
-mkdir -p "$HERMES_DIR/plans"
-mkdir -p "$HERMES_DIR/workspace"
-mkdir -p "$HERMES_DIR/profiles"
-mkdir -p "$HERMES_DIR/crons"
-mkdir -p "$HERMES_DIR/cache"
+# نصب rclone اگه نیست
+if ! command -v rclone &> /dev/null; then
+  echo "[B2] Installing rclone..."
+  curl -s https://rclone.org/install.sh | bash
+  echo "[B2] ✅ rclone installed: $(rclone --version | head -1)"
+else
+  echo "[B2] ✅ rclone already installed: $(rclone --version | head -1)"
+fi
 
-echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
-echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
-echo "[ENTRYPOINT] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
+# پیکربندی rclone
+if [ -n "$B2_APPLICATION_KEY_ID" ] && [ -n "$B2_APPLICATION_KEY" ]; then
+  echo "[B2] Configuring rclone..."
+  mkdir -p /root/.config/rclone
+  
+  cat > /root/.config/rclone/rclone.conf << EOF
+[b2]
+type = b2
+account = ${B2_APPLICATION_KEY_ID}
+key = ${B2_APPLICATION_KEY}
+EOF
+  
+  chmod 600 /root/.config/rclone/rclone.conf
+  echo "[B2] ✅ rclone configured for B2"
+  
+  # تست اتصال
+  if rclone lsd "b2:${B2_BUCKET_NAME}" --max-depth 1 > /dev/null 2>&1; then
+    echo "[B2] ✅ B2 connection successful"
+    B2_ENABLED=true
+  else
+    echo "[B2] ⚠️ B2 connection failed - will start without backup"
+    B2_ENABLED=false
+  fi
+else
+  echo "[B2] ⚠️ B2 credentials not set - no backup will be performed"
+  B2_ENABLED=false
+fi
+
+echo "=========================================="
 
 # ============================================================
 # Portable file size function
@@ -72,94 +109,63 @@ get_file_size() {
 }
 
 # ============================================================
-# Git Initialization
+# RESTORE from Backblaze B2
 # ============================================================
+echo "=========================================="
+echo "[B2] Restoring data from Backblaze B2..."
+echo "=========================================="
+
 cd "$HERMES_DIR"
-if [ ! -d ".git" ]; then
-  echo "[ENTRYPOINT] Initializing new git repo..."
-  git init -b main
-fi
 
-# ============================================================
-# RESTORE EVERYTHING from GitHub
-# ============================================================
-if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
-  REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
-  if git remote get-url origin >/dev/null 2>&1; then
-    git remote set-url origin "$REMOTE_URL"
-  else
-    git remote add origin "$REMOTE_URL"
-  fi
-
-  echo "[ENTRYPOINT] Fetching ALL data from GitHub..."
-  if git fetch origin 2>&1; then
-    echo "[ENTRYPOINT] ✅ Fetch successful"
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      # Backup state.db
-      if [ -f "$HERMES_DIR/state.db" ]; then
-        CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
-        if [ "$CURRENT_SIZE" -gt 1000 ]; then
-          cp "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.pre-reset.$(date +%s)" 2>/dev/null || true
-          echo "[ENTRYPOINT] Saved current state.db as backup"
-        fi
+if [ "$B2_ENABLED" = true ]; then
+  echo "[B2] Checking B2 bucket contents..."
+  
+  # بررسی اینکه آیا چیزی تو B2 هست
+  B2_FILE_COUNT=$(rclone size "b2:${B2_BUCKET_NAME}" --json 2>/dev/null | grep -o '"count":[0-9]*' | cut -d: -f2 || echo "0")
+  
+  if [ "$B2_FILE_COUNT" -gt 0 ]; then
+    echo "[B2] Found $B2_FILE_COUNT files in B2 bucket"
+    
+    # Backup state.db فعلی اگه وجود داره
+    if [ -f "$HERMES_DIR/state.db" ]; then
+      CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
+      if [ "$CURRENT_SIZE" -gt 1000 ]; then
+        BACKUP_FILE="$HERMES_DIR/state.db.pre-restore.$(date +%s)"
+        cp "$HERMES_DIR/state.db" "$BACKUP_FILE" 2>/dev/null || true
+        echo "[B2] Saved current state.db as backup: $BACKUP_FILE"
       fi
-      
-      echo "[ENTRYPOINT] Resetting to origin/main (FULL RESTORE)..."
-      git reset --hard origin/main 2>&1 || true
-      git clean -fd -e "state.db*" -e "*.pre-*" 2>&1 || true
-      echo "[ENTRYPOINT] ✅ ALL DATA RESTORED from GitHub!"
-      echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
-      
+    fi
+    
+    # Restore از B2
+    echo "[B2] Restoring from B2..."
+    rclone sync "b2:${B2_BUCKET_NAME}" "$HERMES_DIR" \
+      --transfers=4 \
+      --checkers=8 \
+      --exclude="*.tmp" \
+      --exclude="*.log" \
+      --exclude="node_modules/**" \
+      --exclude="__pycache__/**" \
+      --exclude="*.pyc" \
+      --retries=3 \
+      --progress \
+      2>&1 | tail -10
+    
+    if [ $? -eq 0 ]; then
+      echo "[B2] ✅ ALL DATA RESTORED from Backblaze B2!"
     else
-      echo "[ENTRYPOINT] ⚠️ No remote branch - starting fresh"
-      cat > .gitignore <<'EOF'
-*.key
-*.pem
-.env
-.env.*
-__pycache__/
-*.pyc
-*.pyo
-*.tmp
-*.log
-*.journal
-state.db-journal
-state.db-wal
-node_modules/
-.DS_Store
-*.pre-reset.*
-state.db.bak.*
-EOF
-      touch .keep
-      git add -A
-      git commit -m "Initial commit" 2>/dev/null || true
-      git branch -M main
-      git push -u origin main 2>&1 || true
+      echo "[B2] ⚠️ Restore had errors - check B2 logs"
     fi
   else
-    echo "[ENTRYPOINT] ⚠️ Fetch failed - using local data"
-  fi
-
-  # Restore state.db from largest backup if current is small
-  if [ -f "$HERMES_DIR/state.db" ]; then
-    CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
-    if [ "$CURRENT_SIZE" -lt 1000 ]; then
-      LARGEST_BACKUP=$(ls -S "$HERMES_DIR"/state.db.bak.* 2>/dev/null | head -1)
-      if [ -n "$LARGEST_BACKUP" ]; then
-        BACKUP_SIZE=$(get_file_size "$LARGEST_BACKUP")
-        if [ "$BACKUP_SIZE" -gt "$CURRENT_SIZE" ]; then
-          cp "$LARGEST_BACKUP" "$HERMES_DIR/state.db"
-          echo "[ENTRYPOINT] ✅ Restored state.db from $LARGEST_BACKUP"
-        fi
-      fi
-    fi
+    echo "[B2] B2 bucket is empty - starting fresh"
   fi
 else
-  echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
+  echo "[B2] ⚠️ B2 not configured - starting fresh"
 fi
 
+echo "=========================================="
+
 # ============================================================
-# 🔥🔥🔥 OVERRIDE config.yaml with 9router (NEW!)
+# 🔥🔥🔥 OVERRIDE config.yaml with 9router
 # ============================================================
 echo "=========================================="
 echo "[CONFIG] Overriding config.yaml with 9router..."
@@ -221,31 +227,6 @@ CONFIG_OVERRIDE_SCRIPT
 echo "=========================================="
 
 # ============================================================
-# Create .gitignore if missing
-# ============================================================
-if [ ! -f ".gitignore" ]; then
-  cat > .gitignore <<'EOF'
-*.key
-*.pem
-.env
-.env.*
-__pycache__/
-*.pyc
-*.pyo
-*.tmp
-*.log
-*.journal
-state.db-journal
-state.db-wal
-node_modules/
-.DS_Store
-*.pre-reset.*
-state.db.bak.*
-EOF
-  echo "[ENTRYPOINT] .gitignore created"
-fi
-
-# ============================================================
 # Final State Summary
 # ============================================================
 echo "=========================================="
@@ -270,22 +251,27 @@ WORKSPACE_FILES=$(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)
 echo "[ENTRYPOINT] Workspace files: $WORKSPACE_FILES"
 
 TOTAL_FILES=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Total files to sync: $TOTAL_FILES"
+echo "[ENTRYPOINT] Total files: $TOTAL_FILES"
 echo "=========================================="
 
 # ============================================================
-# Start Background Sync
+# Start Background Sync (B2 instead of Git)
 # ============================================================
-echo "[ENTRYPOINT] Starting sync.sh in background..."
-/app/sync.sh 2>&1 &
-SYNC_PID=$!
-echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
+if [ "$B2_ENABLED" = true ]; then
+  echo "[ENTRYPOINT] Starting sync.sh (B2) in background..."
+  /app/sync.sh 2>&1 &
+  SYNC_PID=$!
+  echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
 
-sleep 2
-if kill -0 $SYNC_PID 2>/dev/null; then
-  echo "[ENTRYPOINT] ✅ sync.sh is running"
+  sleep 2
+  if kill -0 $SYNC_PID 2>/dev/null; then
+    echo "[ENTRYPOINT] ✅ sync.sh (B2) is running"
+  else
+    echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
+  fi
 else
-  echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
+  echo "[ENTRYPOINT] ⚠️ B2 not configured - skipping sync.sh"
+  SYNC_PID=""
 fi
 
 # ============================================================
@@ -333,26 +319,44 @@ echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
 cleanup() {
   echo ""
   echo "=========================================="
-  echo "[ENTRYPOINT] Shutting down - forcing final sync..."
+  echo "[ENTRYPOINT] Shutting down - forcing final B2 sync..."
   echo "=========================================="
 
+  # Stop sync process
   if [ -n "$SYNC_PID" ]; then
     kill $SYNC_PID 2>/dev/null || true
     wait $SYNC_PID 2>/dev/null || true
   fi
+  
+  # Stop modal client
   if [ -n "$MODAL_PID" ]; then
     kill $MODAL_PID 2>/dev/null || true
     wait $MODAL_PID 2>/dev/null || true
   fi
 
-  cd "$HERMES_DIR"
-  if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
-    echo "[ENTRYPOINT] Committing final changes (ALL data)..."
-    git add -A
-    git commit -m "sync: final shutdown @ $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null || true
-    git push --force origin main 2>&1 || true
-    echo "[ENTRYPOINT] ✅ Final sync completed"
+  # Final B2 sync
+  if [ "$B2_ENABLED" = true ]; then
+    echo "[ENTRYPOINT] Final B2 sync..."
+    rclone sync "$HERMES_DIR" "b2:${B2_BUCKET_NAME}" \
+      --transfers=4 \
+      --checkers=8 \
+      --exclude="*.tmp" \
+      --exclude="*.log" \
+      --exclude="node_modules/**" \
+      --exclude="__pycache__/**" \
+      --exclude="*.pyc" \
+      --retries=3 \
+      2>&1 | tail -5
+    
+    if [ $? -eq 0 ]; then
+      echo "[ENTRYPOINT] ✅ Final B2 sync completed"
+    else
+      echo "[ENTRYPOINT] ⚠️ Final B2 sync had errors"
+    fi
+  else
+    echo "[ENTRYPOINT] ⚠️ B2 not configured - skipping final sync"
   fi
+  
   exit 0
 }
 
