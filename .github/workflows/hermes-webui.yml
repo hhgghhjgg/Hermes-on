@@ -1,4 +1,4 @@
-name: Hermes WebUI on GitHub Actions (with Docker + B2)
+name: Hermes WebUI on GitHub Actions (with Docker)
 
 on:
   workflow_dispatch:
@@ -23,34 +23,20 @@ jobs:
           echo "✅ Image built"
           docker images hermes-webui
           
-      - name: 3. Start Hermes WebUI Container (with Docker Socket + B2)
+      - name: 3. Start Hermes WebUI Container (with Docker Socket)
         env:
-          # Backblaze B2 credentials
-          B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
-          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
-          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
-          
-          # WebUI config
+          GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
+          GITHUB_REPO: ${{ secrets.HERMES_REPO }}
           HERMES_WEBUI_PASSWORD: ${{ secrets.HERMES_WEBUI_PASSWORD }}
           HERMES_WEBUI_HOST: "0.0.0.0"
           HERMES_WEBUI_PORT: "8787"
-          
-          # Model routing
           OMNIROUTE_URL: ${{ secrets.OMNIROUTE_URL }}
           HERMES_WEBUI_DEFAULT_MODEL: ${{ secrets.HERMES_WEBUI_DEFAULT_MODEL }}
-          
-          # Optional LLM API keys
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          
-          # Optional Modal credentials
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          
-          # Sync interval
           SYNC_INTERVAL: ${{ github.event.inputs.sync_interval || '180' }}
           
         run: |
@@ -58,7 +44,7 @@ jobs:
           DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)
           echo "🐳 Docker socket GID: $DOCKER_SOCK_GID"
           
-          # Run Hermes with Docker socket bind-mounted (DooD) + B2 credentials
+          # Run Hermes with Docker socket bind-mounted (DooD)
           docker run -d \
             --restart on-failure \
             --name hermes-webui \
@@ -66,9 +52,8 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v /data:/data \
             --group-add $DOCKER_SOCK_GID \
-            -e B2_APPLICATION_KEY_ID="$B2_APPLICATION_KEY_ID" \
-            -e B2_APPLICATION_KEY="$B2_APPLICATION_KEY" \
-            -e B2_BUCKET_NAME="$B2_BUCKET_NAME" \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+            -e GITHUB_REPO="$GITHUB_REPO" \
             -e HERMES_WEBUI_PASSWORD="$HERMES_WEBUI_PASSWORD" \
             -e HERMES_WEBUI_HOST="$HERMES_WEBUI_HOST" \
             -e HERMES_WEBUI_PORT="$HERMES_WEBUI_PORT" \
@@ -79,8 +64,6 @@ jobs:
             -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             -e OPENAI_API_KEY="$OPENAI_API_KEY" \
             -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-            -e MODAL_TOKEN_ID="$MODAL_TOKEN_ID" \
-            -e MODAL_TOKEN_SECRET="$MODAL_TOKEN_SECRET" \
             -e SYNC_INTERVAL="$SYNC_INTERVAL" \
             hermes-webui:latest
             
@@ -93,11 +76,6 @@ jobs:
           docker exec hermes-webui docker --version || echo "❌ Docker CLI not found"
           docker exec hermes-webui docker ps || echo "❌ Cannot access docker daemon"
           
-          # Verify B2 access
-          echo ""
-          echo "☁️ Testing Backblaze B2 access..."
-          docker exec hermes-webui rclone lsd "b2:${B2_BUCKET_NAME}" --max-depth 1 || echo "⚠️ B2 access test had issues"
-          
           # Test creating a sibling container
           echo ""
           echo "🧪 Test: Creating a hello-world container via Hermes..."
@@ -107,7 +85,7 @@ jobs:
           echo ""
           echo "🏥 Checking WebUI health..."
           if curl -f http://localhost:8787/health 2>/dev/null; then
-            echo "✅ Hermes WebUI is running with Docker + B2 access!"
+            echo "✅ Hermes WebUI is running with Docker access!"
           else
             echo "❌ WebUI failed to start"
             docker logs hermes-webui
@@ -128,20 +106,17 @@ jobs:
           URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -1)
           
           echo "=================================================="
-          echo "  >>> HERMES WEBUI READY WITH DOCKER + B2! <<<"
+          echo "  >>> HERMES WEBUI READY WITH DOCKER! <<<"
           echo "=================================================="
-          echo "  URL:         $URL"
-          echo "  Password:    (set in GitHub Secrets)"
-          echo "  Docker:      ✅ Enabled (Docker-out-of-Docker)"
-          echo "  B2 Backup:   ✅ Enabled (Backblaze B2)"
+          echo "  URL:      $URL"
+          echo "  Password: (set in GitHub Secrets)"
+          echo "  Docker:   ✅ Enabled (Docker-out-of-Docker)"
           echo "=================================================="
           echo ""
           echo "🐳 Hermes can now run commands like:"
           echo "   docker run -d postgres:16"
           echo "   docker-compose up -d"
           echo "   docker build -t myapp ."
-          echo ""
-          echo "☁️ Hermes auto-backs up to Backblaze B2 every ${SYNC_INTERVAL:-180}s"
           echo ""
           echo "📦 Current containers on host:"
           docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
@@ -182,14 +157,6 @@ jobs:
               echo "⚠️ Docker access inside Hermes: FAILED"
             fi
             
-            # Check B2 sync process
-            SYNC_STATUS=$(docker exec hermes-webui ps aux 2>/dev/null | grep -c "[s]ync.sh" || echo "0")
-            if [ "$SYNC_STATUS" -gt 0 ]; then
-              echo "✅ B2 sync process running"
-            else
-              echo "⚠️ B2 sync process NOT running!"
-            fi
-            
             # Count sibling containers created by Hermes
             SIBLING_COUNT=$(docker ps --filter "name!=hermes-webui" --format "{{.Names}}" | wc -l)
             echo "📦 Sibling containers created by Hermes: $SIBLING_COUNT"
@@ -212,10 +179,6 @@ jobs:
               echo ""
               echo "========== System resources =========="
               docker stats hermes-webui --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
-              echo ""
-              echo "========== /data/.hermes size =========="
-              docker exec hermes-webui du -sh /data/.hermes/ 2>/dev/null || echo "N/A"
-              docker exec hermes-webui find /data/.hermes/ -type f 2>/dev/null | wc -l | xargs -I {} echo "Total files: {}"
               echo ""
             fi
           done
