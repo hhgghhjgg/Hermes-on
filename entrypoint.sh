@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -e
 
 echo "=========================================="
@@ -7,7 +6,7 @@ echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
 # ============================================================
-# Git Configuration
+# Git Configuration (برای استفاده‌های احتمالی دیگه)
 # ============================================================
 git config --global user.email "hermes-bot@example.com"
 git config --global user.name "Hermes Bot"
@@ -16,7 +15,15 @@ git config --global pull.rebase false
 git config --global advice.detachedHead false
 
 # ============================================================
-# Modal Configuration
+# 🚫 DISABLE GITHUB SYNC
+# Data is now managed by GitHub Release via the workflow.
+# No git sync, no sync.sh, no git push.
+# ============================================================
+export GITHUB_SYNC_DISABLED=true
+echo "[ENTRYPOINT] 🚫 GitHub sync DISABLED (using Release storage)"
+
+# ============================================================
+# Modal Configuration (اختیاری)
 # ============================================================
 echo "=========================================="
 echo "[MODAL] Checking Modal credentials..."
@@ -57,8 +64,6 @@ mkdir -p "$HERMES_DIR/crons"
 mkdir -p "$HERMES_DIR/cache"
 
 echo "[ENTRYPOINT] HERMES_DIR: $HERMES_DIR"
-echo "[ENTRYPOINT] GITHUB_REPO: ${GITHUB_REPO:-NOT SET}"
-echo "[ENTRYPOINT] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
 
 # ============================================================
 # Portable file size function
@@ -72,94 +77,24 @@ get_file_size() {
 }
 
 # ============================================================
-# Git Initialization
+# 📦 DATA PRE-LOADED BY WORKFLOW
 # ============================================================
-cd "$HERMES_DIR"
-if [ ! -d ".git" ]; then
-  echo "[ENTRYPOINT] Initializing new git repo..."
-  git init -b main
-fi
+echo "=========================================="
+echo "[DATA] Checking pre-loaded data..."
+echo "=========================================="
 
-# ============================================================
-# RESTORE EVERYTHING from GitHub
-# ============================================================
-if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
-  REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
-  if git remote get-url origin >/dev/null 2>&1; then
-    git remote set-url origin "$REMOTE_URL"
-  else
-    git remote add origin "$REMOTE_URL"
-  fi
-
-  echo "[ENTRYPOINT] Fetching ALL data from GitHub..."
-  if git fetch origin 2>&1; then
-    echo "[ENTRYPOINT] ✅ Fetch successful"
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
-      # Backup state.db
-      if [ -f "$HERMES_DIR/state.db" ]; then
-        CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
-        if [ "$CURRENT_SIZE" -gt 1000 ]; then
-          cp "$HERMES_DIR/state.db" "$HERMES_DIR/state.db.pre-reset.$(date +%s)" 2>/dev/null || true
-          echo "[ENTRYPOINT] Saved current state.db as backup"
-        fi
-      fi
-      
-      echo "[ENTRYPOINT] Resetting to origin/main (FULL RESTORE)..."
-      git reset --hard origin/main 2>&1 || true
-      git clean -fd -e "state.db*" -e "*.pre-*" 2>&1 || true
-      echo "[ENTRYPOINT] ✅ ALL DATA RESTORED from GitHub!"
-      echo "[ENTRYPOINT] Current commit: $(git rev-parse --short HEAD)"
-      
-    else
-      echo "[ENTRYPOINT] ⚠️ No remote branch - starting fresh"
-      cat > .gitignore <<'EOF'
-*.key
-*.pem
-.env
-.env.*
-__pycache__/
-*.pyc
-*.pyo
-*.tmp
-*.log
-*.journal
-state.db-journal
-state.db-wal
-node_modules/
-.DS_Store
-*.pre-reset.*
-state.db.bak.*
-EOF
-      touch .keep
-      git add -A
-      git commit -m "Initial commit" 2>/dev/null || true
-      git branch -M main
-      git push -u origin main 2>&1 || true
-    fi
-  else
-    echo "[ENTRYPOINT] ⚠️ Fetch failed - using local data"
-  fi
-
-  # Restore state.db from largest backup if current is small
-  if [ -f "$HERMES_DIR/state.db" ]; then
-    CURRENT_SIZE=$(get_file_size "$HERMES_DIR/state.db")
-    if [ "$CURRENT_SIZE" -lt 1000 ]; then
-      LARGEST_BACKUP=$(ls -S "$HERMES_DIR"/state.db.bak.* 2>/dev/null | head -1)
-      if [ -n "$LARGEST_BACKUP" ]; then
-        BACKUP_SIZE=$(get_file_size "$LARGEST_BACKUP")
-        if [ "$BACKUP_SIZE" -gt "$CURRENT_SIZE" ]; then
-          cp "$LARGEST_BACKUP" "$HERMES_DIR/state.db"
-          echo "[ENTRYPOINT] ✅ Restored state.db from $LARGEST_BACKUP"
-        fi
-      fi
-    fi
-  fi
+if [ -f "$HERMES_DIR/config.yaml" ]; then
+  echo "[DATA] ✅ Found pre-loaded config.yaml"
+  echo "[DATA] ✅ Data was restored from GitHub Release by the workflow"
 else
-  echo "[ENTRYPOINT] ❌ GITHUB_TOKEN or GITHUB_REPO NOT SET!"
+  echo "[DATA] ⚠️ No config.yaml found - starting fresh"
+  echo "[DATA] ℹ️ A new config will be created by the CONFIG step"
 fi
 
+echo "=========================================="
+
 # ============================================================
-# 🔥🔥🔥 OVERRIDE config.yaml with 9router (NEW!)
+# 🔥 Override config.yaml with 9router
 # ============================================================
 echo "=========================================="
 echo "[CONFIG] Overriding config.yaml with 9router..."
@@ -180,9 +115,7 @@ else:
     config = {}
     print(f"[CONFIG] ⚠️ No config.yaml, creating new")
 
-# ============================================================
 # Override providers and model sections with 9router
-# ============================================================
 config['providers'] = {
     '9router': {
         'base_url': 'https://9router-production-d138.up.railway.app/v1',
@@ -221,31 +154,6 @@ CONFIG_OVERRIDE_SCRIPT
 echo "=========================================="
 
 # ============================================================
-# Create .gitignore if missing
-# ============================================================
-if [ ! -f ".gitignore" ]; then
-  cat > .gitignore <<'EOF'
-*.key
-*.pem
-.env
-.env.*
-__pycache__/
-*.pyc
-*.pyo
-*.tmp
-*.log
-*.journal
-state.db-journal
-state.db-wal
-node_modules/
-.DS_Store
-*.pre-reset.*
-state.db.bak.*
-EOF
-  echo "[ENTRYPOINT] .gitignore created"
-fi
-
-# ============================================================
 # Final State Summary
 # ============================================================
 echo "=========================================="
@@ -255,6 +163,8 @@ echo "=========================================="
 if [ -f "$HERMES_DIR/state.db" ]; then
   FINAL_SIZE=$(get_file_size "$HERMES_DIR/state.db")
   echo "[ENTRYPOINT] state.db: $FINAL_SIZE bytes"
+else
+  echo "[ENTRYPOINT] state.db: not found (will be created)"
 fi
 
 SKILL_COUNT=$(find "$HERMES_DIR/skills" -maxdepth 3 -name "SKILL.md" 2>/dev/null | wc -l)
@@ -270,26 +180,11 @@ WORKSPACE_FILES=$(find "$HERMES_DIR/workspace" -type f 2>/dev/null | wc -l)
 echo "[ENTRYPOINT] Workspace files: $WORKSPACE_FILES"
 
 TOTAL_FILES=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
-echo "[ENTRYPOINT] Total files to sync: $TOTAL_FILES"
+echo "[ENTRYPOINT] Total files: $TOTAL_FILES"
 echo "=========================================="
 
 # ============================================================
-# Start Background Sync
-# ============================================================
-echo "[ENTRYPOINT] Starting sync.sh in background..."
-/app/sync.sh 2>&1 &
-SYNC_PID=$!
-echo "[ENTRYPOINT] Sync PID: $SYNC_PID"
-
-sleep 2
-if kill -0 $SYNC_PID 2>/dev/null; then
-  echo "[ENTRYPOINT] ✅ sync.sh is running"
-else
-  echo "[ENTRYPOINT] ❌ sync.sh FAILED to start!"
-fi
-
-# ============================================================
-# Start Modal Client API Server
+# Start Modal Client API Server (if enabled)
 # ============================================================
 if [ "$MODAL_CLIENT_ENABLED" = true ]; then
   echo "=========================================="
@@ -328,31 +223,21 @@ echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
 echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
 
 # ============================================================
-# Graceful Shutdown Handler
+# Graceful Shutdown Handler (simplified - no git sync)
 # ============================================================
 cleanup() {
   echo ""
   echo "=========================================="
-  echo "[ENTRYPOINT] Shutting down - forcing final sync..."
+  echo "[ENTRYPOINT] Shutting down..."
   echo "=========================================="
 
-  if [ -n "$SYNC_PID" ]; then
-    kill $SYNC_PID 2>/dev/null || true
-    wait $SYNC_PID 2>/dev/null || true
-  fi
   if [ -n "$MODAL_PID" ]; then
     kill $MODAL_PID 2>/dev/null || true
     wait $MODAL_PID 2>/dev/null || true
   fi
 
-  cd "$HERMES_DIR"
-  if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
-    echo "[ENTRYPOINT] Committing final changes (ALL data)..."
-    git add -A
-    git commit -m "sync: final shutdown @ $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null || true
-    git push --force origin main 2>&1 || true
-    echo "[ENTRYPOINT] ✅ Final sync completed"
-  fi
+  echo "[ENTRYPOINT] ✅ Cleanup completed"
+  echo "[ENTRYPOINT] ℹ️ Data will be saved to Release by the workflow"
   exit 0
 }
 
