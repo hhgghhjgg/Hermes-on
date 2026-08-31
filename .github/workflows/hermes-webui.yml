@@ -40,7 +40,7 @@ jobs:
           echo "✅ rclone version: $(rclone version | head -1)"
 
       # ============================================================
-      # STEP 3: Configure rclone for B2
+      # STEP 3: Configure rclone for B2 (FIXED YAML!)
       # ============================================================
       - name: 3. Configure rclone for B2
         env:
@@ -50,13 +50,17 @@ jobs:
           echo "🔑 Configuring rclone for B2..."
           
           mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-[b2]
-type = b2
-account = $B2_KEY_ID
-key = $B2_APP_KEY
-hard_delete = false
-EOF
+          
+          # FIXED: Use echo instead of heredoc to avoid YAML array parsing issue
+          {
+            echo "[b2]"
+            echo "type = b2"
+            echo "account = $B2_KEY_ID"
+            echo "key = $B2_APP_KEY"
+            echo "hard_delete = false"
+          } > ~/.config/rclone/rclone.conf
+          
+          echo "✅ rclone config created"
           
           echo "🔍 Testing B2 connection..."
           if rclone lsd b2: > /dev/null 2>&1; then
@@ -92,7 +96,6 @@ EOF
           sudo mkdir -p /data/.hermes
           sudo chown -R $(whoami) /data/.hermes
           
-          # Check if archive exists
           if rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME 2>/dev/null | grep -q .; then
             echo "📥 Found existing archive, downloading..."
             rclone copyto b2:$B2_BUCKET/$B2_ARCHIVE_NAME /tmp/backup/$B2_ARCHIVE_NAME
@@ -232,7 +235,6 @@ EOF
           TOTAL_MINUTES=$((DURATION_HOURS * 60))
           SYNC_COUNT=0
           
-          # Function to sync data to B2
           sync_to_b2() {
             local ARCHIVE_PATH="/tmp/hermes-data-sync.tar.gz"
             
@@ -241,7 +243,6 @@ EOF
             echo "│  📦 SYNC #$((SYNC_COUNT + 1)) to B2 starting...  │"
             echo "└────────────────────────────────────────┘"
             
-            # Create archive from /data/.hermes
             echo "  ⏳ Creating archive..."
             tar -czf "$ARCHIVE_PATH" \
               -C /data/.hermes \
@@ -256,7 +257,6 @@ EOF
             local ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
             echo "  ✅ Archive created: $ARCHIVE_SIZE"
             
-            # Upload to B2 (overwrites existing file)
             echo "  🚀 Uploading to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
             if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
               echo "  ✅ Upload successful"
@@ -265,43 +265,35 @@ EOF
               echo "  ❌ Upload failed!"
             fi
             
-            # Cleanup local archive
             rm -f "$ARCHIVE_PATH"
-            
             echo "  ✅ Sync #$SYNC_COUNT completed"
           }
           
-          # Main loop - every minute for TOTAL_MINUTES
           for i in $(seq 1 $TOTAL_MINUTES); do
             sleep 60
             
-            # Check container health
             if ! docker ps | grep -q hermes-webui; then
               echo "❌ Container died! Restarting..."
               docker start hermes-webui 2>/dev/null || true
               sleep 10
             fi
             
-            # Check WebUI health
             if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
               echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') ✅ Healthy"
             else
               echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') ⚠️  Health check failed"
             fi
             
-            # Check cloudflared
             if ! pgrep -f cloudflared > /dev/null; then
               echo "⚠️  Cloudflared died! Restarting..."
               nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared-restart.log 2>&1 &
               sleep 5
             fi
             
-            # Sync every SYNC_INTERVAL minutes
             if [ $((i % SYNC_INTERVAL)) -eq 0 ]; then
               sync_to_b2
             fi
             
-            # Show detailed stats every 30 minutes
             if [ $((i % 30)) -eq 0 ]; then
               echo ""
               echo "========== Containers =========="
@@ -324,14 +316,12 @@ EOF
           echo "💾 FINAL SYNC - Saving all data to B2..."
           echo "=========================================="
           
-          # Stop container gracefully
           echo "🛑 Stopping Hermes container..."
           docker stop hermes-webui 2>/dev/null || true
           sleep 5
           
           ARCHIVE_PATH="/tmp/hermes-data-final.tar.gz"
           
-          # Create final archive
           echo "📦 Creating final archive..."
           tar -czf "$ARCHIVE_PATH" \
             -C /data/.hermes \
@@ -344,7 +334,6 @@ EOF
           ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
           echo "✅ Final archive created: $ARCHIVE_SIZE"
           
-          # Upload to B2
           echo "🚀 Uploading final archive to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
           if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
             echo "✅ Final sync completed successfully!"
