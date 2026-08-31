@@ -1,94 +1,130 @@
 #!/bin/bash
+# ============================================================
+# sync.sh - Release-based sync (v2)
+# ============================================================
+# این اسکریپت دیگه به صورت خودکار اجرا نمیشه!
+# سینک خودکار توسط ورکفلو GitHub Actions انجام میشه.
+# این اسکریپت فقط برای استفاده دستی هست.
+# ============================================================
 
-DATA_DIR="/data"
-HERMES_DIR="$DATA_DIR/.hermes"
-SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
-MAX_BACKUPS=3
+set -e
 
 echo "=========================================="
-echo "[SYNC] Started at $(date)"
-echo "[SYNC] Interval: ${SYNC_INTERVAL}s"
-echo "[SYNC] GitHub Repo: ${GITHUB_REPO:-NOT SET}"
-echo "[SYNC] Token set: $([ -n "$GITHUB_TOKEN" ] && echo YES || echo NO)"
-echo "[SYNC] Scope: ALL Hermes data"
-echo "[SYNC]   - state.db (chats)"
-echo "[SYNC]   - webui/ (sessions, settings)"
-echo "[SYNC]   - skills/ (all 200+ skills)"
-echo "[SYNC]   - workspace/ (your projects)"
-echo "[SYNC]   - MEMORY.md, USER.md, SOUL.md"
-echo "[SYNC]   - config.yaml"
-echo "[SYNC]   - profiles/"
-echo "[SYNC]   - crons/"
-echo "[SYNC]   - plans/"
-echo "[SYNC]   - Everything else in /data/.hermes/"
-echo "[SYNC] Modal: state stored in Modal Volumes (not synced here)"
+echo "[SYNC v2] Started at $(date)"
 echo "=========================================="
 
-cd "$HERMES_DIR" || exit 1
-
-counter=0
-
 # ============================================================
-# Helper function to check Modal Client health
+# Check if sync is disabled
 # ============================================================
-check_modal_client() {
-    if [ -n "$MODAL_TOKEN_ID" ]; then
-        MODAL_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/health 2>/dev/null || echo "000")
-        if [ "$MODAL_HEALTH" = "200" ]; then
-            echo "[SYNC #$counter] ✓ Modal Client healthy (port 8090)"
-        else
-            echo "[SYNC #$counter] ⚠️ Modal Client not responding (port 8090)"
-        fi
-    fi
-}
+if [ "$GITHUB_SYNC_DISABLED" = "true" ]; then
+  echo "[SYNC v2] 🚫 Sync is DISABLED (GITHUB_SYNC_DISABLED=true)"
+  echo "[SYNC v2] ℹ️  Automatic sync is handled by the GitHub workflow"
+  echo "[SYNC v2] ℹ️  Data is saved to GitHub Release every 30 minutes"
+  echo "[SYNC v2] ✅ Exiting without action"
+  exit 0
+fi
 
 # ============================================================
-# Main sync loop
+# Configuration
 # ============================================================
-while true; do
-    sleep "$SYNC_INTERVAL"
-    counter=$((counter + 1))
-    
-    # Check Modal Client health every 10 syncs (every 5 min)
-    if [ $((counter % 10)) -eq 0 ]; then
-        check_modal_client
-    fi
-    
-    if [ -n "$GITHUB_TOKEN" ] && [ -n "$GITHUB_REPO" ]; then
-        if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
-            echo "[SYNC #$counter] 🔄 Changes detected. Committing ALL data..."
-            
-            # Cleanup old backups
-            BACKUP_COUNT=$(ls -1 state.db.bak.* 2>/dev/null | wc -l)
-            if [ "$BACKUP_COUNT" -gt "$MAX_BACKUPS" ]; then
-                echo "[SYNC #$counter] Cleaning up old backups (keeping $MAX_BACKUPS)..."
-                ls -1t state.db.bak.* | tail -n +$((MAX_BACKUPS + 1)) | xargs -r rm -f
-            fi
-            
-            # Add ALL changes
-            git add -A
-            
-            # Count files
-            FILES_COUNT=$(git status --porcelain 2>/dev/null | wc -l)
-            
-            git commit -m "sync #$counter @ $(date '+%H:%M:%S') - $FILES_COUNT files" >/dev/null 2>&1
-            
-            echo "[SYNC #$counter] Force pushing to ${GITHUB_REPO} ($FILES_COUNT files)..."
-            PUSH_OUTPUT=$(git push --force origin main 2>&1)
-            PUSH_STATUS=$?
-            
-            if [ $PUSH_STATUS -eq 0 ]; then
-                echo "[SYNC #$counter] ✅ Force pushed to GitHub"
-            else
-                echo "[SYNC #$counter] ❌ Push FAILED (code: $PUSH_STATUS)"
-                echo "[SYNC #$counter] === ERROR DETAILS ==="
-                echo "$PUSH_OUTPUT"
-                echo "======================="
-            fi
-        else
-            echo "[SYNC #$counter] ✓ No changes"
-        fi
-    else
-        echo "[SYNC #$counter] ⚠️ Token or Repo missing!"
-    fi
-done
+DATA_REPO="${DATA_REPO:-hhgghhjgg/Hermes-pre}"
+HERMES_DIR="/data/.hermes"
+RELEASE_NAME="manual-$(date +%Y%m%d-%H%M%S)"
+ARCHIVE_PATH="/tmp/hermes-data-$RELEASE_NAME.tar.gz"
+
+echo "[SYNC v2] Data repo:    $DATA_REPO"
+echo "[SYNC v2] Hermes dir:   $HERMES_DIR"
+echo "[SYNC v2] Release name: $RELEASE_NAME"
+echo "=========================================="
+
+# ============================================================
+# Check prerequisites
+# ============================================================
+if ! command -v gh &> /dev/null; then
+  echo "[SYNC v2] ❌ ERROR: 'gh' (GitHub CLI) is not installed!"
+  echo "[SYNC v2] ℹ️  This script is meant to run inside GitHub Actions"
+  echo "[SYNC v2] ℹ️  For manual sync, run it from the workflow instead"
+  exit 1
+fi
+
+if ! command -v tar &> /dev/null; then
+  echo "[SYNC v2] ❌ ERROR: 'tar' is not installed!"
+  exit 1
+fi
+
+if [ ! -d "$HERMES_DIR" ]; then
+  echo "[SYNC v2] ❌ ERROR: Hermes directory not found: $HERMES_DIR"
+  exit 1
+fi
+
+echo "[SYNC v2] ✅ Prerequisites check passed"
+
+# ============================================================
+# Create archive
+# ============================================================
+echo ""
+echo "[SYNC v2] 📦 Creating archive..."
+
+tar -czf "$ARCHIVE_PATH" \
+  -C "$HERMES_DIR" \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  --exclude='__pycache__' \
+  --exclude='*.pyc' \
+  --exclude='cache/*.log' \
+  --exclude='webui/sessions/_run_journal' \
+  . 2>/dev/null || true
+
+ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
+FILE_COUNT=$(find "$HERMES_DIR" -type f 2>/dev/null | wc -l)
+
+echo "[SYNC v2] ✅ Archive created: $ARCHIVE_SIZE"
+echo "[SYNC v2] ✅ Files included: $FILE_COUNT"
+
+# ============================================================
+# Create GitHub Release
+# ============================================================
+echo ""
+echo "[SYNC v2] 🚀 Creating GitHub Release..."
+
+if gh release create "$RELEASE_NAME" \
+  "$ARCHIVE_PATH" \
+  --repo "$DATA_REPO" \
+  --title "Manual Backup $(date '+%Y-%m-%d %H:%M:%S')" \
+  --notes "Manual sync - $FILE_COUNT files"; then
+  
+  echo "[SYNC v2] ✅ Release created successfully"
+  echo "[SYNC v2] 🔗 https://github.com/$DATA_REPO/releases/tag/$RELEASE_NAME"
+else
+  echo "[SYNC v2] ❌ ERROR: Failed to create release"
+  echo "[SYNC v2] ℹ️  Check your GitHub token and permissions"
+  rm -f "$ARCHIVE_PATH"
+  exit 1
+fi
+
+# ============================================================
+# Cleanup local archive
+# ============================================================
+rm -f "$ARCHIVE_PATH"
+
+# ============================================================
+# Keep only last 5 releases
+# ============================================================
+echo ""
+echo "[SYNC v2] 🧹 Cleaning up old releases..."
+
+OLD_RELEASES=$(gh release list --repo "$DATA_REPO" --limit 100 --json tagName -q '.[5:] | .[].tagName' 2>/dev/null || true)
+
+if [ -n "$OLD_RELEASES" ]; then
+  for old in $OLD_RELEASES; do
+    echo "  Deleting: $old"
+    gh release delete "$old" --repo "$DATA_REPO" --yes --cleanup-tag 2>/dev/null || true
+  done
+else
+  echo "[SYNC v2] ℹ️  No old releases to cleanup"
+fi
+
+echo ""
+echo "=========================================="
+echo "[SYNC v2] ✅ Sync completed successfully!"
+echo "=========================================="
