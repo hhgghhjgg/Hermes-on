@@ -6,7 +6,7 @@ echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
 # ============================================================
-# Git Configuration (برای استفاده‌های احتمالی دیگه)
+# Git Configuration (for potential other uses)
 # ============================================================
 git config --global user.email "hermes-bot@example.com"
 git config --global user.name "Hermes Bot"
@@ -16,14 +16,14 @@ git config --global advice.detachedHead false
 
 # ============================================================
 # 🚫 DISABLE GITHUB SYNC
-# Data is now managed by GitHub Release via the workflow.
-# No git sync, no sync.sh, no git push.
+# Data is now managed by Backblaze B2 via the workflow.
+# No git fetch, no git push, no sync.sh.
 # ============================================================
 export GITHUB_SYNC_DISABLED=true
-echo "[ENTRYPOINT] 🚫 GitHub sync DISABLED (using Release storage)"
+echo "[ENTRYPOINT] 🚫 GitHub sync DISABLED (using B2 storage)"
 
 # ============================================================
-# Modal Configuration (اختیاری)
+# Modal Configuration (optional)
 # ============================================================
 echo "=========================================="
 echo "[MODAL] Checking Modal credentials..."
@@ -77,7 +77,7 @@ get_file_size() {
 }
 
 # ============================================================
-# 📦 DATA PRE-LOADED BY WORKFLOW
+# 📦 DATA PRE-LOADED BY WORKFLOW (from B2)
 # ============================================================
 echo "=========================================="
 echo "[DATA] Checking pre-loaded data..."
@@ -85,7 +85,7 @@ echo "=========================================="
 
 if [ -f "$HERMES_DIR/config.yaml" ]; then
   echo "[DATA] ✅ Found pre-loaded config.yaml"
-  echo "[DATA] ✅ Data was restored from GitHub Release by the workflow"
+  echo "[DATA] ✅ Data was restored from B2 by the workflow"
 else
   echo "[DATA] ⚠️ No config.yaml found - starting fresh"
   echo "[DATA] ℹ️ A new config will be created by the CONFIG step"
@@ -223,7 +223,7 @@ echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
 echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
 
 # ============================================================
-# Graceful Shutdown Handler (simplified - no git sync)
+# Graceful Shutdown Handler (no git sync)
 # ============================================================
 cleanup() {
   echo ""
@@ -237,7 +237,7 @@ cleanup() {
   fi
 
   echo "[ENTRYPOINT] ✅ Cleanup completed"
-  echo "[ENTRYPOINT] ℹ️ Data will be saved to Release by the workflow"
+  echo "[ENTRYPOINT] ℹ️ Data will be saved to B2 by the workflow"
   exit 0
 }
 
@@ -258,4 +258,10 @@ if [ ! -f "server.py" ]; then
 fi
 
 echo "[ENTRYPOINT] ✅ Found server.py in /app/webui"
-exec python server.py 2>&1 | grep -v "agent session listing skipped" | grep -v "Token from GITHUB_TOKEN is not supported" | grep -v "Slow WebUI request" | grep -v "live provider-catalog rebuild exceeded"
+
+# Start WebUI (filter out noisy log lines)
+python server.py 2>&1 | \
+  grep -v "agent session listing skipped" | \
+  grep -v "Token from GITHUB_TOKEN is not supported" | \
+  grep -v "Slow WebUI request" | \
+  grep -v "live provider-catalog rebuild exceeded"
