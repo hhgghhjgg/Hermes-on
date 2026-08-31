@@ -1,11 +1,12 @@
 # ============================================================
-# Hermes Agent - Complete Docker Image
+# Hermes Agent - Complete Docker Image (Final Version)
 # ============================================================
-# ✅ 19 Programming Languages installed
-# ✅ WebUI with npm build (no 404)
+# ✅ 19 Programming Languages
+# ✅ WebUI with npm build
 # ✅ MCP servers working (mcp python SDK installed)
-# ✅ Docker-out-of-Docker (DooD) - Hermes can create containers
-# ✅ Pre-warmed MCP packages for fast startup
+# ✅ Docker-out-of-Docker (DooD)
+# ✅ Pre-warmed MCP packages
+# ✅ FIXED HEALTHCHECK (port 8787)
 # ============================================================
 
 FROM python:3.11-slim
@@ -18,7 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
     MODAL_ENVIRONMENT=main \
-    HERMES_WEBUI_PORT=8080 \
+    HERMES_WEBUI_PORT=8787 \
     HERMES_WEBUI_HOST=0.0.0.0 \
     DOCKER_HOST=unix:///var/run/docker.sock
 
@@ -53,7 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# LANGUAGE 3: Go (with symlink - no PATH change)
+# LANGUAGE 3: Go (with symlink)
 # ============================================================
 RUN wget -q https://go.dev/dl/go1.23.1.linux-amd64.tar.gz -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
@@ -138,10 +139,6 @@ RUN pip install --no-cache-dir uv
 # ============================================================
 # DOCKER CLI INSTALLATION (Docker-out-of-Docker)
 # ============================================================
-# Hermes can run docker commands when docker.sock is bind-mounted
-# from the host. This allows Hermes to create sibling containers
-# on the host's docker daemon.
-# ============================================================
 RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
     | tar xz --strip-components=1 -C /usr/local/bin docker/docker \
     && curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
@@ -192,10 +189,10 @@ RUN git clone https://github.com/NousResearch/hermes-agent.git /app/hermes-agent
     && git clone https://github.com/nesquena/hermes-webui.git /app/webui
 
 # ============================================================
-# INSTALL HERMES AGENT WITH MCP EXTRA
+# 🔥 INSTALL HERMES AGENT WITH MCP EXTRA
 # ============================================================
-# CRITICAL FIX: Without [mcp], MCP servers show as "Configured
-# but inactive" in WebUI because the Python MCP SDK is missing
+# CRITICAL: Without [mcp], MCP servers show as "Configured but
+# inactive" because the Python MCP SDK is missing
 # ============================================================
 WORKDIR /app/hermes-agent
 RUN pip install --no-cache-dir -e ".[mcp]"
@@ -244,11 +241,7 @@ RUN mkdir -p /root/.modal /workspace /data/.hermes
 WORKDIR /workspace
 
 # ============================================================
-# PRE-WARM COMMON MCP PACKAGES (speed up first use)
-# ============================================================
-# These are the most commonly used MCP servers. Pre-installing
-# them globally means Hermes doesn't need to download them on
-# first use, which saves 30-60 seconds per MCP server.
+# PRE-WARM COMMON MCP PACKAGES
 # ============================================================
 RUN npm install -g --silent \
     @modelcontextprotocol/server-fetch \
@@ -261,7 +254,6 @@ RUN npm install -g --silent \
     @modelcontextprotocol/server-brave-search \
     @modelcontextprotocol/server-sequentialthinking \
     @modelcontextprotocol/server-bash \
-    @modelcontextprotocol/server-time \
     @playwright/mcp@latest \
     @browserbase/mcp-server-browserbase \
     firecrawl-mcp \
@@ -269,47 +261,37 @@ RUN npm install -g --silent \
     @e2b/mcp-server \
     @ofershap/mcp-server-docker \
     mcp-jupyter \
-    @modelcontextprotocol/server-filesystem \
-    @modelcontextprotocol/server-memory \
     @modelcontextprotocol/server-knowledge-graph \
-    @modelcontextprotocol/server-sequential-thinking \
     @tree-sitter/mcp \
     @burntsushi/ripgrep-mcp \
     @sourcegraph/lsp-mcp \
     @ast-grep/mcp \
     vector-code-search-mcp \
-    mcp-server-time \
-    2>/dev/null || echo "[WARN] MCP pre-warm failed, will install on first use"
+    2>/dev/null || echo "[WARN] MCP pre-warm failed"
 
 # Pre-warm Python MCP servers via uv
 RUN uv tool install mcp-server-git 2>/dev/null || true \
     && uv tool install mcp-server-time 2>/dev/null || true \
-    && uv tool install mcp-server-filesystem 2>/dev/null || true \
-    && uv tool install mcp-server-memory 2>/dev/null || true \
-    && uv tool install mcp-server-sequentialthinking 2>/dev/null || true
+    && uv tool install mcp-server-filesystem 2>/dev/null || true
 
-# Pre-warm Playwright browser (heavy but needed for browser automation)
+# Pre-warm Playwright browser
 RUN npx -y playwright install chromium --with-deps 2>/dev/null || true
 
 # ============================================================
 # CREATE DOCKER GROUP (for docker.sock permissions)
 # ============================================================
-# When docker.sock is bind-mounted from the host, the container
-# needs to be in the same group as the socket. This creates the
-# docker group so we can add users to it.
-# ============================================================
 RUN groupadd -f docker && usermod -aG docker root
 
 # ============================================================
-# EXPOSE PORT
+# 🔥🔥🔥 FIXED: EXPOSE + HEALTHCHECK ON PORT 8787 🔥🔥🔥
 # ============================================================
-EXPOSE 8080
+# قبل: پورت ۸۰۸۰ بود که باعث می‌شد کانتینر unhealthy بشه
+# چون ورکفلو HERMES_WEBUI_PORT=8787 رو ست می‌کنه
+# ============================================================
+EXPOSE 8787
 
-# ============================================================
-# HEALTH CHECK
-# ============================================================
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8080/ || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+    CMD curl -f http://localhost:8787/health || exit 1
 
 # ============================================================
 # ENTRYPOINT
