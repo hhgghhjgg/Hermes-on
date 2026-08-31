@@ -1,4 +1,4 @@
-name: Hermes WebUI (Release Storage)
+name: Hermes WebUI (B2 Storage)
 
 on:
   workflow_dispatch:
@@ -10,11 +10,11 @@ on:
       sync_interval_min:
         description: 'Sync interval in minutes'
         required: false
-        default: '30'
+        default: '10'
 
 env:
-  DATA_REPO: hhgghhjgg/Hermes-pre
-  CODE_REPO: hhgghhjgg/Hermes-on
+  B2_BUCKET: ${{ secrets.B2_BUCKET_NAME }}
+  B2_ARCHIVE_NAME: hermes-data.tar.gz
 
 jobs:
   build:
@@ -31,103 +31,101 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # STEP 2: Verify token access to BOTH repositories
+      # STEP 2: Install rclone
       # ============================================================
-      - name: 2. Verify Token Access
-        env:
-          GH_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
+      - name: 2. Install rclone
         run: |
-          echo "=========================================="
-          echo "🔑 Step 2: Verifying token access..."
-          echo "=========================================="
-          echo "GitHub CLI version: $(gh --version | head -1)"
-          echo ""
-          
-          # Test access to code repo
-          echo "📦 Checking access to CODE repo ($CODE_REPO)..."
-          if gh repo view "$CODE_REPO" > /dev/null 2>&1; then
-            echo "  ✅ Code repo: ACCESSIBLE"
-          else
-            echo "  ❌ Code repo: NOT ACCESSIBLE"
-            echo "  Fix: Ensure HERMES_GH_TOKEN has 'repo' scope"
-            exit 1
-          fi
-          
-          # Test access to data repo
-          echo "📦 Checking access to DATA repo ($DATA_REPO)..."
-          if gh repo view "$DATA_REPO" > /dev/null 2>&1; then
-            echo "  ✅ Data repo: ACCESSIBLE"
-          else
-            echo "  ❌ Data repo: NOT ACCESSIBLE"
-            echo "  Fix: Ensure HERMES_GH_TOKEN has access to $DATA_REPO"
-            exit 1
-          fi
-          
-          echo ""
-          echo "✅ Token has access to both repositories"
+          echo "📦 Installing rclone..."
+          curl -sSL https://rclone.org/install.sh | sudo bash
+          echo "✅ rclone version: $(rclone version | head -1)"
 
       # ============================================================
-      # STEP 3: Restore data from latest GitHub Release (1 request!)
+      # STEP 3: Configure rclone for B2
       # ============================================================
-      - name: 3. Restore Data from Latest Release
+      - name: 3. Configure rclone for B2
         env:
-          GH_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
+          B2_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APPLICATION_KEY }}
         run: |
-          echo "=========================================="
-          echo "📦 Step 3: Restoring data from Release..."
-          echo "=========================================="
+          echo "🔑 Configuring rclone for B2..."
           
-          # Find latest release in data repo
-          LATEST_RELEASE=$(gh release list --repo "$DATA_REPO" --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || echo "")
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+[b2]
+type = b2
+account = $B2_KEY_ID
+key = $B2_APP_KEY
+hard_delete = false
+EOF
           
-          if [ -z "$LATEST_RELEASE" ]; then
-            echo "ℹ️ No previous release found"
-            echo "ℹ️ Starting fresh - data will be saved to Release on shutdown"
-            sudo mkdir -p /data/.hermes
-            sudo chown -R $(whoami) /data/.hermes
-            exit 0
+          echo "🔍 Testing B2 connection..."
+          if rclone lsd b2: > /dev/null 2>&1; then
+            echo "✅ B2 connection successful"
+          else
+            echo "❌ B2 connection failed!"
+            echo "Check your B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY secrets"
+            exit 1
           fi
           
-          echo "📥 Found release: $LATEST_RELEASE"
-          echo "⬇️  Downloading hermes-data.tar.gz (ONE FILE = 3500 files)..."
+          if rclone lsd b2: | grep -q "$B2_BUCKET"; then
+            echo "✅ Bucket '$B2_BUCKET' found"
+          else
+            echo "❌ Bucket '$B2_BUCKET' not found!"
+            echo "Available buckets:"
+            rclone lsd b2:
+            exit 1
+          fi
+
+      # ============================================================
+      # STEP 4: Restore data from B2 (ONE FILE!)
+      # ============================================================
+      - name: 4. Restore Data from B2
+        run: |
+          echo "=========================================="
+          echo "📦 Restoring data from B2..."
+          echo "=========================================="
+          echo "Bucket:  $B2_BUCKET"
+          echo "Archive: $B2_ARCHIVE_NAME"
+          echo ""
           
-          # Download the archive
           mkdir -p /tmp/backup
-          gh release download "$LATEST_RELEASE" \
-            --repo "$DATA_REPO" \
-            --pattern "hermes-data.tar.gz" \
-            --dir /tmp/backup
-          
-          # Extract to /data/.hermes
-          echo "📂 Extracting files..."
           sudo mkdir -p /data/.hermes
           sudo chown -R $(whoami) /data/.hermes
-          tar -xzf /tmp/backup/hermes-data.tar.gz -C /data/.hermes
           
-          # Count restored files
-          FILE_COUNT=$(find /data/.hermes -type f 2>/dev/null | wc -l)
-          echo ""
-          echo "✅ Restored $FILE_COUNT files from single archive"
-          echo ""
-          echo "📊 Directory sizes:"
-          du -sh /data/.hermes/* 2>/dev/null | sort -rh | head -10 || echo "  (empty)"
+          # Check if archive exists
+          if rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME 2>/dev/null | grep -q .; then
+            echo "📥 Found existing archive, downloading..."
+            rclone copyto b2:$B2_BUCKET/$B2_ARCHIVE_NAME /tmp/backup/$B2_ARCHIVE_NAME
+            
+            echo "📂 Extracting files..."
+            tar -xzf /tmp/backup/$B2_ARCHIVE_NAME -C /data/.hermes
+            
+            FILE_COUNT=$(find /data/.hermes -type f 2>/dev/null | wc -l)
+            echo ""
+            echo "✅ Restored $FILE_COUNT files from single archive"
+            echo ""
+            echo "📊 Directory sizes:"
+            du -sh /data/.hermes/* 2>/dev/null | sort -rh | head -10
+          else
+            echo "ℹ️ No previous archive found - starting fresh"
+            echo "ℹ️ Data will be saved to B2 on first sync"
+          fi
           
-          # Cleanup temp files
           rm -rf /tmp/backup
 
       # ============================================================
-      # STEP 4: Build Docker image
+      # STEP 5: Build Docker image
       # ============================================================
-      - name: 4. Build Docker Image
+      - name: 5. Build Docker Image
         run: |
           echo "🔨 Building Docker image..."
           docker build -t hermes-webui:latest .
           echo "✅ Image built successfully"
 
       # ============================================================
-      # STEP 5: Start Hermes WebUI container
+      # STEP 6: Start Hermes WebUI container
       # ============================================================
-      - name: 5. Start Hermes Container
+      - name: 6. Start Hermes Container
         env:
           GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
           HERMES_WEBUI_PASSWORD: ${{ secrets.HERMES_WEBUI_PASSWORD }}
@@ -143,11 +141,9 @@ jobs:
         run: |
           echo "🐳 Starting Hermes container..."
           
-          # Get docker socket group ID for Docker-out-of-Docker
           DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)
           echo "Docker socket GID: $DOCKER_SOCK_GID"
           
-          # Run container with pre-loaded data
           docker run -d \
             --restart on-failure \
             --name hermes-webui \
@@ -171,7 +167,6 @@ jobs:
           echo "⏳ Waiting 60 seconds for WebUI to start..."
           sleep 60
           
-          # Health check
           echo ""
           echo "🏥 Running health check..."
           if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
@@ -181,29 +176,25 @@ jobs:
             curl -s http://localhost:8787/health | jq . || true
           else
             echo "❌ WebUI failed to start!"
-            echo ""
-            echo "Last 50 lines of logs:"
             docker logs hermes-webui --tail 50
             exit 1
           fi
 
       # ============================================================
-      # STEP 6: Install Cloudflared for public URL
+      # STEP 7: Install Cloudflared
       # ============================================================
-      - name: 6. Install Cloudflared
+      - name: 7. Install Cloudflared
         run: |
-          echo "🌐 Installing Cloudflared..."
           curl -sL -o cloudflared \
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
           echo "✅ Cloudflared installed"
 
       # ============================================================
-      # STEP 7: Start Cloudflare Tunnel
+      # STEP 8: Start Cloudflare Tunnel
       # ============================================================
-      - name: 7. Start Cloudflare Tunnel
+      - name: 8. Start Cloudflare Tunnel
         run: |
-          echo "🚀 Starting Cloudflare Tunnel..."
           nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared.log 2>&1 &
           sleep 15
           
@@ -215,40 +206,40 @@ jobs:
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
           echo "  🌐 URL:      $URL"
-          echo "  🔑 Password: (set in GitHub Secrets)"
-          echo "  💾 Storage:  GitHub Release ($DATA_REPO)"
+          echo "  💾 Storage:  Backblaze B2 ($B2_BUCKET)"
+          echo "  📦 Archive:  $B2_ARCHIVE_NAME"
+          echo "  🔄 Sync:     Every ${{ github.event.inputs.sync_interval_min || '10' }} minutes"
           echo "  🐳 Docker:   Enabled (Docker-out-of-Docker)"
           echo ""
           echo "╚══════════════════════════════════════════════════════════╝"
 
       # ============================================================
-      # STEP 8: Keep Alive + Sync Loop
+      # STEP 9: Keep Alive + Sync Loop
       # ============================================================
-      - name: 8. Keep Alive & Periodic Sync
+      - name: 9. Keep Alive & Periodic Sync to B2
         env:
-          GH_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
           DURATION_HOURS: ${{ github.event.inputs.duration_hours || '6' }}
-          SYNC_INTERVAL: ${{ github.event.inputs.sync_interval_min || '30' }}
+          SYNC_INTERVAL: ${{ github.event.inputs.sync_interval_min || '10' }}
         run: |
           echo "=========================================="
           echo "🔄 Starting keep-alive loop..."
           echo "=========================================="
           echo "Duration:        $DURATION_HOURS hours"
           echo "Sync interval:   $SYNC_INTERVAL minutes"
+          echo "Archive name:    $B2_ARCHIVE_NAME"
           echo ""
           
           TOTAL_MINUTES=$((DURATION_HOURS * 60))
           SYNC_COUNT=0
           
-          # Function to sync data to GitHub Release
-          sync_to_release() {
-            local RELEASE_NAME="backup-$(date +%Y%m%d-%H%M%S)"
-            local ARCHIVE_PATH="/tmp/hermes-data-$RELEASE_NAME.tar.gz"
+          # Function to sync data to B2
+          sync_to_b2() {
+            local ARCHIVE_PATH="/tmp/hermes-data-sync.tar.gz"
             
             echo ""
-            echo "┌────────────────────────────────────┐"
-            echo "│  📦 SYNC #$((SYNC_COUNT + 1)) starting...    │"
-            echo "└────────────────────────────────────┘"
+            echo "┌────────────────────────────────────────┐"
+            echo "│  📦 SYNC #$((SYNC_COUNT + 1)) to B2 starting...  │"
+            echo "└────────────────────────────────────────┘"
             
             # Create archive from /data/.hermes
             echo "  ⏳ Creating archive..."
@@ -265,29 +256,17 @@ jobs:
             local ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
             echo "  ✅ Archive created: $ARCHIVE_SIZE"
             
-            # Create new release
-            echo "  🚀 Creating release: $RELEASE_NAME"
-            if gh release create "$RELEASE_NAME" \
-              "$ARCHIVE_PATH" \
-              --repo "$DATA_REPO" \
-              --title "Backup $(date '+%Y-%m-%d %H:%M:%S')" \
-              --notes "Automated backup - $(find /data/.hermes -type f 2>/dev/null | wc -l) files"; then
-              echo "  ✅ Release created successfully"
+            # Upload to B2 (overwrites existing file)
+            echo "  🚀 Uploading to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
+            if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
+              echo "  ✅ Upload successful"
               SYNC_COUNT=$((SYNC_COUNT + 1))
             else
-              echo "  ❌ Failed to create release"
+              echo "  ❌ Upload failed!"
             fi
             
             # Cleanup local archive
             rm -f "$ARCHIVE_PATH"
-            
-            # Keep only last 5 releases (cleanup old ones)
-            echo "  🧹 Cleaning up old releases..."
-            OLD_RELEASES=$(gh release list --repo "$DATA_REPO" --limit 100 --json tagName -q '.[5:] | .[].tagName' 2>/dev/null || true)
-            for old in $OLD_RELEASES; do
-              echo "    Deleting: $old"
-              gh release delete "$old" --repo "$DATA_REPO" --yes --cleanup-tag 2>/dev/null || true
-            done
             
             echo "  ✅ Sync #$SYNC_COUNT completed"
           }
@@ -319,7 +298,7 @@ jobs:
             
             # Sync every SYNC_INTERVAL minutes
             if [ $((i % SYNC_INTERVAL)) -eq 0 ]; then
-              sync_to_release
+              sync_to_b2
             fi
             
             # Show detailed stats every 30 minutes
@@ -336,15 +315,13 @@ jobs:
           echo "📊 Total syncs performed: $SYNC_COUNT"
 
       # ============================================================
-      # STEP 9: Final Sync (always runs, even on failure)
+      # STEP 10: Final Sync (always runs, even on failure)
       # ============================================================
-      - name: 9. Final Sync on Shutdown
+      - name: 10. Final Sync on Shutdown
         if: always()
-        env:
-          GH_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
         run: |
           echo "=========================================="
-          echo "💾 FINAL SYNC - Saving all data..."
+          echo "💾 FINAL SYNC - Saving all data to B2..."
           echo "=========================================="
           
           # Stop container gracefully
@@ -352,7 +329,6 @@ jobs:
           docker stop hermes-webui 2>/dev/null || true
           sleep 5
           
-          RELEASE_NAME="final-$(date +%Y%m%d-%H%M%S)"
           ARCHIVE_PATH="/tmp/hermes-data-final.tar.gz"
           
           # Create final archive
@@ -368,15 +344,13 @@ jobs:
           ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
           echo "✅ Final archive created: $ARCHIVE_SIZE"
           
-          # Create final release
-          echo "🚀 Creating final release: $RELEASE_NAME"
-          gh release create "$RELEASE_NAME" \
-            "$ARCHIVE_PATH" \
-            --repo "$DATA_REPO" \
-            --title "Final Backup $(date '+%Y-%m-%d %H:%M:%S')" \
-            --notes "Final backup - $(find /data/.hermes -type f 2>/dev/null | wc -l) files"
+          # Upload to B2
+          echo "🚀 Uploading final archive to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
+          if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
+            echo "✅ Final sync completed successfully!"
+          else
+            echo "❌ Final sync failed!"
+            exit 1
+          fi
           
-          echo "✅ Final sync completed!"
-          
-          # Cleanup
           rm -f "$ARCHIVE_PATH"
