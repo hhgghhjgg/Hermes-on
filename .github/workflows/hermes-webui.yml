@@ -22,26 +22,17 @@ jobs:
     timeout-minutes: 420
     
     steps:
-      # ============================================================
-      # STEP 1: Checkout code repository
-      # ============================================================
       - name: 1. Checkout Code Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # ============================================================
-      # STEP 2: Install rclone
-      # ============================================================
       - name: 2. Install rclone
         run: |
           echo "📦 Installing rclone..."
           curl -sSL https://rclone.org/install.sh | sudo bash
           echo "✅ rclone version: $(rclone version | head -1)"
 
-      # ============================================================
-      # STEP 3: Configure rclone for B2 (FIXED YAML!)
-      # ============================================================
       - name: 3. Configure rclone for B2
         env:
           B2_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
@@ -51,13 +42,11 @@ jobs:
           
           mkdir -p ~/.config/rclone
           
-          # FIXED: Use echo instead of heredoc to avoid YAML array parsing issue
           {
             echo "[b2]"
             echo "type = b2"
             echo "account = $B2_KEY_ID"
             echo "key = $B2_APP_KEY"
-            echo "hard_delete = false"
           } > ~/.config/rclone/rclone.conf
           
           echo "✅ rclone config created"
@@ -67,7 +56,6 @@ jobs:
             echo "✅ B2 connection successful"
           else
             echo "❌ B2 connection failed!"
-            echo "Check your B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY secrets"
             exit 1
           fi
           
@@ -75,14 +63,10 @@ jobs:
             echo "✅ Bucket '$B2_BUCKET' found"
           else
             echo "❌ Bucket '$B2_BUCKET' not found!"
-            echo "Available buckets:"
             rclone lsd b2:
             exit 1
           fi
 
-      # ============================================================
-      # STEP 4: Restore data from B2 (ONE FILE!)
-      # ============================================================
       - name: 4. Restore Data from B2
         run: |
           echo "=========================================="
@@ -111,23 +95,16 @@ jobs:
             du -sh /data/.hermes/* 2>/dev/null | sort -rh | head -10
           else
             echo "ℹ️ No previous archive found - starting fresh"
-            echo "ℹ️ Data will be saved to B2 on first sync"
           fi
           
           rm -rf /tmp/backup
 
-      # ============================================================
-      # STEP 5: Build Docker image
-      # ============================================================
       - name: 5. Build Docker Image
         run: |
           echo "🔨 Building Docker image..."
           docker build -t hermes-webui:latest .
           echo "✅ Image built successfully"
 
-      # ============================================================
-      # STEP 6: Start Hermes WebUI container
-      # ============================================================
       - name: 6. Start Hermes Container
         env:
           GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
@@ -183,9 +160,6 @@ jobs:
             exit 1
           fi
 
-      # ============================================================
-      # STEP 7: Install Cloudflared
-      # ============================================================
       - name: 7. Install Cloudflared
         run: |
           curl -sL -o cloudflared \
@@ -193,9 +167,6 @@ jobs:
           chmod +x cloudflared
           echo "✅ Cloudflared installed"
 
-      # ============================================================
-      # STEP 8: Start Cloudflare Tunnel
-      # ============================================================
       - name: 8. Start Cloudflare Tunnel
         run: |
           nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared.log 2>&1 &
@@ -216,9 +187,6 @@ jobs:
           echo ""
           echo "╚══════════════════════════════════════════════════════════╝"
 
-      # ============================================================
-      # STEP 9: Keep Alive + Sync Loop
-      # ============================================================
       - name: 9. Keep Alive & Periodic Sync to B2
         env:
           DURATION_HOURS: ${{ github.event.inputs.duration_hours || '6' }}
@@ -243,6 +211,7 @@ jobs:
             echo "│  📦 SYNC #$((SYNC_COUNT + 1)) to B2 starting...  │"
             echo "└────────────────────────────────────────┘"
             
+            # 1. Create archive
             echo "  ⏳ Creating archive..."
             tar -czf "$ARCHIVE_PATH" \
               -C /data/.hermes \
@@ -257,12 +226,30 @@ jobs:
             local ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
             echo "  ✅ Archive created: $ARCHIVE_SIZE"
             
-            echo "  🚀 Uploading to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
+            # 2. Upload new version FIRST (safe: don't delete before upload)
+            echo "  🚀 Uploading new version to B2..."
             if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
               echo "  ✅ Upload successful"
+              
+              # 3. AFTER successful upload, delete old versions
+              echo "  🧹 Cleaning up old versions..."
+              OLD_VERSIONS=$(rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json 2>/dev/null | jq -r '.[1:][].ID' 2>/dev/null || true)
+              
+              if [ -n "$OLD_VERSIONS" ]; then
+                local OLD_COUNT=$(echo "$OLD_VERSIONS" | wc -l)
+                echo "  Deleting $OLD_COUNT old versions..."
+                
+                for version_id in $OLD_VERSIONS; do
+                  rclone delete b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-version-id "$version_id" 2>/dev/null || true
+                done
+                echo "  ✅ Old versions cleaned"
+              else
+                echo "  ℹ️ No old versions to clean"
+              fi
+              
               SYNC_COUNT=$((SYNC_COUNT + 1))
             else
-              echo "  ❌ Upload failed!"
+              echo "  ❌ Upload failed! (old versions preserved)"
             fi
             
             rm -f "$ARCHIVE_PATH"
@@ -306,9 +293,6 @@ jobs:
           echo "✅ Keep-alive loop completed"
           echo "📊 Total syncs performed: $SYNC_COUNT"
 
-      # ============================================================
-      # STEP 10: Final Sync (always runs, even on failure)
-      # ============================================================
       - name: 10. Final Sync on Shutdown
         if: always()
         run: |
@@ -334,9 +318,20 @@ jobs:
           ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
           echo "✅ Final archive created: $ARCHIVE_SIZE"
           
-          echo "🚀 Uploading final archive to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
+          echo "🚀 Uploading final archive to B2..."
           if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
             echo "✅ Final sync completed successfully!"
+            
+            # Clean up old versions after final upload
+            echo "🧹 Cleaning up old versions..."
+            OLD_VERSIONS=$(rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json 2>/dev/null | jq -r '.[1:][].ID' 2>/dev/null || true)
+            
+            if [ -n "$OLD_VERSIONS" ]; then
+              for version_id in $OLD_VERSIONS; do
+                rclone delete b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-version-id "$version_id" 2>/dev/null || true
+              done
+              echo "✅ Old versions cleaned"
+            fi
           else
             echo "❌ Final sync failed!"
             exit 1
