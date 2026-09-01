@@ -1,4 +1,4 @@
-name: Cleanup B2 Old Versions
+name: Cleanup B2 - FORCE REMOVE HIDDEN
 
 on:
   workflow_dispatch:
@@ -32,54 +32,82 @@ jobs:
           } > ~/.config/rclone/rclone.conf
           echo "✅ rclone configured"
 
-      - name: 3. Show Current Versions
+      - name: 3. Show Current State BEFORE Cleanup
         run: |
           echo "=========================================="
-          echo "📊 Current versions of $B2_ARCHIVE_NAME:"
+          echo "📊 BEFORE CLEANUP - Bucket contents:"
           echo "=========================================="
-          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions || echo "No file found"
+          
           echo ""
-          echo "Total versions:"
-          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json | jq length || echo "0"
+          echo "📁 Visible files (current version):"
+          rclone ls b2:$B2_BUCKET/ 2>/dev/null | head -20 || echo "  (empty)"
+          
+          echo ""
+          echo "📁 Hidden files (old versions):"
+          rclone ls b2:$B2_BUCKET/ --b2-versions 2>/dev/null | head -50 || echo "  (none)"
+          
+          echo ""
+          echo "📊 Total size (all versions):"
+          rclone size b2:$B2_BUCKET/ --b2-versions 2>/dev/null || echo "  (error)"
+          
+          echo ""
+          echo "📊 Current version size:"
+          rclone size b2:$B2_BUCKET/ 2>/dev/null || echo "  (error)"
 
-      - name: 4. Delete All Old Versions (keep latest)
+      - name: 4. CLEANUP ALL HIDDEN VERSIONS (THE MAGIC!)
         run: |
           echo "=========================================="
-          echo "🧹 Deleting old versions (keeping latest)..."
+          echo "🧹 RUNNING: rclone cleanup b2:$B2_BUCKET/"
           echo "=========================================="
+          echo ""
+          echo "This will:"
+          echo "  ✅ Remove ALL hidden (old) versions"
+          echo "  ✅ Keep current version of files intact"
+          echo "  ✅ Free up space from version accumulation"
+          echo ""
           
-          # Get all version IDs except the first one (latest)
-          OLD_VERSIONS=$(rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json 2>/dev/null | jq -r '.[1:][].ID' 2>/dev/null || true)
-          
-          if [ -z "$OLD_VERSIONS" ]; then
-            echo "ℹ️ No old versions to delete"
-            exit 0
+          if rclone cleanup b2:$B2_BUCKET/; then
+            echo ""
+            echo "✅✅✅ CLEANUP SUCCESSFUL! ✅✅✅"
+          else
+            echo ""
+            echo "❌ Cleanup failed!"
+            exit 1
           fi
-          
-          COUNT=$(echo "$OLD_VERSIONS" | wc -l)
-          echo "🗑️  Deleting $COUNT old versions..."
-          
-          DELETED=0
-          for version_id in $OLD_VERSIONS; do
-            if rclone delete b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-version-id "$version_id" 2>/dev/null; then
-              DELETED=$((DELETED + 1))
-              echo "  ✅ Deleted version: $version_id"
-            else
-              echo "  ⚠️ Failed to delete: $version_id"
-            fi
-          done
-          
-          echo ""
-          echo "✅ Deleted $DELETED out of $COUNT old versions"
 
-      - name: 5. Verify Cleanup
+      - name: 5. Show State AFTER Cleanup
         run: |
-          echo "=========================================="
-          echo "🔍 Verifying cleanup..."
-          echo "=========================================="
           echo ""
-          echo "Remaining versions:"
-          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions || echo "No file found"
+          echo "=========================================="
+          echo "📊 AFTER CLEANUP - Bucket contents:"
+          echo "=========================================="
+          
           echo ""
-          echo "Total remaining:"
-          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json | jq length || echo "0"
+          echo "📁 Visible files:"
+          rclone ls b2:$B2_BUCKET/ 2>/dev/null | head -20 || echo "  (empty)"
+          
+          echo ""
+          echo "📁 Hidden files (should be empty):"
+          rclone ls b2:$B2_BUCKET/ --b2-versions 2>/dev/null | head -50 || echo "  (none)"
+          
+          echo ""
+          echo "📊 Total size now:"
+          rclone size b2:$B2_BUCKET/ --b2-versions 2>/dev/null || echo "  (error)"
+          
+          echo ""
+          echo "📊 Current version size:"
+          rclone size b2:$B2_BUCKET/ 2>/dev/null || echo "  (error)"
+
+      - name: 6. Final Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║         🎉 CLEANUP COMPLETED!                           ║"
+          echo "╚══════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "✅ All old (hidden) versions deleted"
+          echo "✅ Current files preserved"
+          echo "✅ B2 storage freed up"
+          echo ""
+          echo "🔗 Check B2 dashboard:"
+          echo "   https://secure.backblaze.com/b2_buckets.htm"
