@@ -1,0 +1,85 @@
+name: Cleanup B2 Old Versions
+
+on:
+  workflow_dispatch:
+
+env:
+  B2_BUCKET: ${{ secrets.B2_BUCKET_NAME }}
+  B2_ARCHIVE_NAME: hermes-data.tar.gz
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: 1. Install rclone
+        run: |
+          curl -sSL https://rclone.org/install.sh | sudo bash
+          echo "✅ rclone version: $(rclone version | head -1)"
+
+      - name: 2. Configure rclone for B2
+        env:
+          B2_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+        run: |
+          mkdir -p ~/.config/rclone
+          {
+            echo "[b2]"
+            echo "type = b2"
+            echo "account = $B2_KEY_ID"
+            echo "key = $B2_APP_KEY"
+          } > ~/.config/rclone/rclone.conf
+          echo "✅ rclone configured"
+
+      - name: 3. Show Current Versions
+        run: |
+          echo "=========================================="
+          echo "📊 Current versions of $B2_ARCHIVE_NAME:"
+          echo "=========================================="
+          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions || echo "No file found"
+          echo ""
+          echo "Total versions:"
+          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json | jq length || echo "0"
+
+      - name: 4. Delete All Old Versions (keep latest)
+        run: |
+          echo "=========================================="
+          echo "🧹 Deleting old versions (keeping latest)..."
+          echo "=========================================="
+          
+          # Get all version IDs except the first one (latest)
+          OLD_VERSIONS=$(rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json 2>/dev/null | jq -r '.[1:][].ID' 2>/dev/null || true)
+          
+          if [ -z "$OLD_VERSIONS" ]; then
+            echo "ℹ️ No old versions to delete"
+            exit 0
+          fi
+          
+          COUNT=$(echo "$OLD_VERSIONS" | wc -l)
+          echo "🗑️  Deleting $COUNT old versions..."
+          
+          DELETED=0
+          for version_id in $OLD_VERSIONS; do
+            if rclone delete b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-version-id "$version_id" 2>/dev/null; then
+              DELETED=$((DELETED + 1))
+              echo "  ✅ Deleted version: $version_id"
+            else
+              echo "  ⚠️ Failed to delete: $version_id"
+            fi
+          done
+          
+          echo ""
+          echo "✅ Deleted $DELETED out of $COUNT old versions"
+
+      - name: 5. Verify Cleanup
+        run: |
+          echo "=========================================="
+          echo "🔍 Verifying cleanup..."
+          echo "=========================================="
+          echo ""
+          echo "Remaining versions:"
+          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions || echo "No file found"
+          echo ""
+          echo "Total remaining:"
+          rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME --b2-versions --format json | jq length || echo "0"
