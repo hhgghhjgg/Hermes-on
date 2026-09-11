@@ -6,7 +6,7 @@ echo "[ENTRYPOINT] Started at $(date)"
 echo "=========================================="
 
 # ============================================================
-# Git Configuration (for potential other uses)
+# Git Configuration
 # ============================================================
 git config --global user.email "hermes-bot@example.com"
 git config --global user.name "Hermes Bot"
@@ -16,8 +16,6 @@ git config --global advice.detachedHead false
 
 # ============================================================
 # 🚫 DISABLE GITHUB SYNC
-# Data is now managed by Backblaze B2 via the workflow.
-# No git fetch, no git push, no sync.sh.
 # ============================================================
 export GITHUB_SYNC_DISABLED=true
 echo "[ENTRYPOINT] 🚫 GitHub sync DISABLED (using B2 storage)"
@@ -88,25 +86,27 @@ if [ -f "$HERMES_DIR/config.yaml" ]; then
   echo "[DATA] ✅ Data was restored from B2 by the workflow"
 else
   echo "[DATA] ⚠️ No config.yaml found - starting fresh"
-  echo "[DATA] ℹ️ A new config will be created by the CONFIG step"
 fi
 
 echo "=========================================="
 
 # ============================================================
-# 🔥 Override config.yaml with 9router
+# 🔥 SMART PROVIDER CONFIGURATION
 # ============================================================
 echo "=========================================="
-echo "[CONFIG] Overriding config.yaml with 9router..."
+echo "[CONFIG] Configuring providers smartly..."
 echo "=========================================="
 
 python3 << 'CONFIG_OVERRIDE_SCRIPT'
 import yaml
 import os
+import urllib.request
+import json
+import sys
 
 config_path = '/data/.hermes/config.yaml'
 
-# Load existing config (or create new)
+# Load existing config
 if os.path.exists(config_path):
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f) or {}
@@ -115,22 +115,160 @@ else:
     config = {}
     print(f"[CONFIG] ⚠️ No config.yaml, creating new")
 
-# Override providers and model sections with 9router
-config['providers'] = {
-    '9router': {
-        'base_url': 'https://9router-production-d138.up.railway.app/v1',
-        'api_key': 'sk-d042a2942b66660e-wjdw1y-30603948'
+# ============================================================
+# CHECK IF LOCAL 9ROUTER IS RUNNING
+# ============================================================
+LOCAL_ROUTER_URL = "http://localhost:20128/v1"
+LOCAL_ROUTER_HEALTH = "http://localhost:20128/"
+REMOTE_ROUTER_URL = "https://9router-production-d138.up.railway.app/v1"
+REMOTE_ROUTER_KEY = "sk-d042a2942b66660e-wjdw1y-30603948"
+
+def check_url(url, timeout=5):
+    """Check if URL is accessible"""
+    try:
+        req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.status == 200
+    except Exception as e:
+        return False
+
+def get_models_from_router(base_url, api_key=None):
+    """Get list of models from router"""
+    try:
+        url = f"{base_url}/models"
+        req = urllib.request.Request(url)
+        if api_key:
+            req.add_header('Authorization', f'Bearer {api_key}')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            models = data.get('data', [])
+            return [m.get('id') for m in models if m.get('id')]
+    except Exception as e:
+        print(f"[CONFIG] ⚠️ Failed to get models: {e}")
+        return []
+
+# Check local 9Router first
+LOCAL_ROUTER_AVAILABLE = check_url(LOCAL_ROUTER_HEALTH)
+
+if LOCAL_ROUTER_AVAILABLE:
+    print(f"[CONFIG] ✅ Local 9Router detected at {LOCAL_ROUTER_URL}")
+    
+    # Get models from local router
+    models = get_models_from_router(LOCAL_ROUTER_URL)
+    print(f"[CONFIG] 📋 Found {len(models)} models from local 9Router")
+    
+    if models:
+        print(f"[CONFIG] Models: {', '.join(models[:10])}{'...' if len(models) > 10 else ''}")
+    
+    # Configure providers with local 9Router
+    config['providers'] = {
+        '9router': {
+            'base_url': LOCAL_ROUTER_URL,
+            'api_key': 'sk-local-9router',
+            'description': 'Local 9Router instance'
+        }
     }
-}
+    
+    # Set default model
+    default_model = models[0] if models else 'hermes-fast'
+    config['model'] = {
+        'default': default_model,
+        'provider': 'custom:9router',
+        'base_url': LOCAL_ROUTER_URL,
+        'api_key': 'sk-local-9router'
+    }
+    
+    print(f"[CONFIG] ✅ Using local 9Router with model: {default_model}")
+    
+else:
+    print(f"[CONFIG] ⚠️ Local 9Router not available, using remote...")
+    
+    # Check remote 9Router
+    REMOTE_ROUTER_AVAILABLE = check_url(REMOTE_ROUTER_URL.replace('/v1', ''))
+    
+    if REMOTE_ROUTER_AVAILABLE:
+        print(f"[CONFIG] ✅ Remote 9Router detected at {REMOTE_ROUTER_URL}")
+        
+        # Get models from remote router
+        models = get_models_from_router(REMOTE_ROUTER_URL, REMOTE_ROUTER_KEY)
+        print(f"[CONFIG] 📋 Found {len(models)} models from remote 9Router")
+        
+        # Configure providers with remote 9Router
+        config['providers'] = {
+            '9router': {
+                'base_url': REMOTE_ROUTER_URL,
+                'api_key': REMOTE_ROUTER_KEY,
+                'description': 'Remote 9Router instance'
+            }
+        }
+        
+        # Set default model
+        default_model = models[0] if models else 'hermes-fast'
+        config['model'] = {
+            'default': default_model,
+            'provider': 'custom:9router',
+            'base_url': REMOTE_ROUTER_URL,
+            'api_key': REMOTE_ROUTER_KEY
+        }
+        
+        print(f"[CONFIG] ✅ Using remote 9Router with model: {default_model}")
+    else:
+        print(f"[CONFIG] ❌ No 9Router available, using default config")
+        
+        # Keep existing config or set minimal default
+        if 'providers' not in config:
+            config['providers'] = {}
+        if 'model' not in config:
+            config['model'] = {
+                'default': 'hermes-fast',
+                'provider': 'custom:9router',
+                'base_url': REMOTE_ROUTER_URL,
+                'api_key': REMOTE_ROUTER_KEY
+            }
 
-config['model'] = {
-    'default': 'hermes-fast',
-    'provider': 'custom:9router',
-    'base_url': 'https://9router-production-d138.up.railway.app/v1',
-    'api_key': 'sk-d042a2942b66660e-wjdw1y-30603948'
-}
+# ============================================================
+# ADD ADDITIONAL PROVIDERS IF CONFIGURED
+# ============================================================
+# Check for OpenRouter
+if os.environ.get('OPENROUTER_API_KEY'):
+    config['providers']['openrouter'] = {
+        'base_url': 'https://openrouter.ai/api/v1',
+        'api_key': os.environ['OPENROUTER_API_KEY'],
+        'description': 'OpenRouter'
+    }
+    print(f"[CONFIG] ✅ Added OpenRouter provider")
 
-# Keep existing workspace, memory, user, soul if present
+# Check for OpenAI
+if os.environ.get('OPENAI_API_KEY'):
+    config['providers']['openai'] = {
+        'base_url': 'https://api.openai.com/v1',
+        'api_key': os.environ['OPENAI_API_KEY'],
+        'description': 'OpenAI'
+    }
+    print(f"[CONFIG] ✅ Added OpenAI provider")
+
+# Check for Anthropic
+if os.environ.get('ANTHROPIC_API_KEY'):
+    config['providers']['anthropic'] = {
+        'base_url': 'https://api.anthropic.com/v1',
+        'api_key': os.environ['ANTHROPIC_API_KEY'],
+        'description': 'Anthropic'
+    }
+    print(f"[CONFIG] ✅ Added Anthropic provider")
+
+# Check for Gemini
+if os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'):
+    gemini_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY')
+    config['providers']['gemini'] = {
+        'base_url': 'https://generativelanguage.googleapis.com/v1beta',
+        'api_key': gemini_key,
+        'description': 'Google Gemini'
+    }
+    print(f"[CONFIG] ✅ Added Gemini provider")
+
+# ============================================================
+# KEEP EXISTING SETTINGS
+# ============================================================
 if 'workspace' not in config:
     config['workspace'] = '/data/.hermes/workspace'
 if 'memory' not in config:
@@ -143,12 +281,15 @@ if 'user' not in config:
 if 'soul' not in config:
     config['soul'] = {'path': '/data/.hermes/SOUL.md'}
 
-# Save config
+# ============================================================
+# SAVE CONFIG
+# ============================================================
 with open(config_path, 'w') as f:
     yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-print(f"[CONFIG] ✅ config.yaml updated with 9router")
-print(f"[CONFIG] ✅ Plugins/MCPs preserved (not touched)")
+print(f"[CONFIG] ✅ config.yaml updated")
+print(f"[CONFIG] ✅ Providers configured: {', '.join(config.get('providers', {}).keys())}")
+print(f"[CONFIG] ✅ Default model: {config.get('model', {}).get('default', 'unknown')}")
 CONFIG_OVERRIDE_SCRIPT
 
 echo "=========================================="
@@ -223,7 +364,7 @@ echo "[ENTRYPOINT] HERMES_WEBUI_HOST: $HERMES_WEBUI_HOST"
 echo "[ENTRYPOINT] HERMES_WEBUI_PORT: $HERMES_WEBUI_PORT"
 
 # ============================================================
-# Graceful Shutdown Handler (no git sync)
+# Graceful Shutdown Handler
 # ============================================================
 cleanup() {
   echo ""
@@ -259,7 +400,6 @@ fi
 
 echo "[ENTRYPOINT] ✅ Found server.py in /app/webui"
 
-# Start WebUI (filter out noisy log lines)
 python server.py 2>&1 | \
   grep -v "agent session listing skipped" | \
   grep -v "Token from GITHUB_TOKEN is not supported" | \
