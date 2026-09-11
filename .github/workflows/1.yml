@@ -1,0 +1,343 @@
+name: Hermes WebUI (B2 Storage)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'Duration in hours (max 6)'
+        required: false
+        default: '6'
+      sync_interval_min:
+        description: 'Sync interval in minutes'
+        required: false
+        default: '10'
+
+env:
+  B2_BUCKET: ${{ secrets.B2_BUCKET_NAME }}
+  B2_ARCHIVE_NAME: hermes-data.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    
+    steps:
+      # ============================================================
+      # STEP 1: Checkout code repository
+      # ============================================================
+      - name: 1. Checkout Code Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ============================================================
+      # STEP 2: Install rclone
+      # ============================================================
+      - name: 2. Install rclone
+        run: |
+          echo "📦 Installing rclone..."
+          curl -sSL https://rclone.org/install.sh | sudo bash
+          echo "✅ rclone version: $(rclone version | head -1)"
+
+      # ============================================================
+      # STEP 3: Configure rclone for B2
+      # ============================================================
+      - name: 3. Configure rclone for B2
+        env:
+          B2_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+        run: |
+          echo "🔑 Configuring rclone for B2..."
+          
+          mkdir -p ~/.config/rclone
+          
+          {
+            echo "[b2]"
+            echo "type = b2"
+            echo "account = $B2_KEY_ID"
+            echo "key = $B2_APP_KEY"
+          } > ~/.config/rclone/rclone.conf
+          
+          echo "✅ rclone config created"
+          
+          echo "🔍 Testing B2 connection..."
+          if rclone lsd b2: > /dev/null 2>&1; then
+            echo "✅ B2 connection successful"
+          else
+            echo "❌ B2 connection failed!"
+            echo "Check your B2_APPLICATION_KEY_ID and B2_APPLICATION_KEY secrets"
+            exit 1
+          fi
+          
+          if rclone lsd b2: | grep -q "$B2_BUCKET"; then
+            echo "✅ Bucket '$B2_BUCKET' found"
+          else
+            echo "❌ Bucket '$B2_BUCKET' not found!"
+            echo "Available buckets:"
+            rclone lsd b2:
+            exit 1
+          fi
+
+      # ============================================================
+      # STEP 4: Restore data from B2 (ONE FILE!)
+      # ============================================================
+      - name: 4. Restore Data from B2
+        run: |
+          echo "=========================================="
+          echo "📦 Restoring data from B2..."
+          echo "=========================================="
+          echo "Bucket:  $B2_BUCKET"
+          echo "Archive: $B2_ARCHIVE_NAME"
+          echo ""
+          
+          mkdir -p /tmp/backup
+          sudo mkdir -p /data/.hermes
+          sudo chown -R $(whoami) /data/.hermes
+          
+          if rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME 2>/dev/null | grep -q .; then
+            echo "📥 Found existing archive, downloading..."
+            rclone copyto b2:$B2_BUCKET/$B2_ARCHIVE_NAME /tmp/backup/$B2_ARCHIVE_NAME
+            
+            echo "📂 Extracting files..."
+            tar -xzf /tmp/backup/$B2_ARCHIVE_NAME -C /data/.hermes
+            
+            FILE_COUNT=$(find /data/.hermes -type f 2>/dev/null | wc -l)
+            echo ""
+            echo "✅ Restored $FILE_COUNT files from single archive"
+            echo ""
+            echo "📊 Directory sizes:"
+            du -sh /data/.hermes/* 2>/dev/null | sort -rh | head -10
+          else
+            echo "ℹ️ No previous archive found - starting fresh"
+            echo "ℹ️ Data will be saved to B2 on first sync"
+          fi
+          
+          rm -rf /tmp/backup
+
+      # ============================================================
+      # STEP 5: Build Docker image
+      # ============================================================
+      - name: 5. Build Docker Image
+        run: |
+          echo "🔨 Building Docker image..."
+          docker build -t hermes-webui:latest .
+          echo "✅ Image built successfully"
+
+      # ============================================================
+      # STEP 6: Start Hermes WebUI container
+      # ============================================================
+      - name: 6. Start Hermes Container
+        env:
+          GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
+          HERMES_WEBUI_PASSWORD: ${{ secrets.HERMES_WEBUI_PASSWORD }}
+          HERMES_WEBUI_HOST: "0.0.0.0"
+          HERMES_WEBUI_PORT: "8787"
+          OMNIROUTE_URL: ${{ secrets.OMNIROUTE_URL }}
+          HERMES_WEBUI_DEFAULT_MODEL: ${{ secrets.HERMES_WEBUI_DEFAULT_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          echo "🐳 Starting Hermes container..."
+          
+          DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)
+          echo "Docker socket GID: $DOCKER_SOCK_GID"
+          
+          docker run -d \
+            --restart on-failure \
+            --name hermes-webui \
+            -p 8787:8787 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /data:/data \
+            --group-add $DOCKER_SOCK_GID \
+            -e HERMES_WEBUI_PASSWORD="$HERMES_WEBUI_PASSWORD" \
+            -e HERMES_WEBUI_HOST="$HERMES_WEBUI_HOST" \
+            -e HERMES_WEBUI_PORT="$HERMES_WEBUI_PORT" \
+            -e OMNIROUTE_URL="$OMNIROUTE_URL" \
+            -e HERMES_WEBUI_DEFAULT_MODEL="$HERMES_WEBUI_DEFAULT_MODEL" \
+            -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+            -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+            -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+            -e GITHUB_SYNC_DISABLED=true \
+            hermes-webui:latest
+          
+          echo "⏳ Waiting 60 seconds for WebUI to start..."
+          sleep 60
+          
+          echo ""
+          echo "🏥 Running health check..."
+          if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
+            echo ""
+            echo "✅✅✅ HERMES WEBUI IS RUNNING! ✅✅✅"
+            echo ""
+            curl -s http://localhost:8787/health | jq . || true
+          else
+            echo "❌ WebUI failed to start!"
+            docker logs hermes-webui --tail 50
+            exit 1
+          fi
+
+      # ============================================================
+      # STEP 7: Install Cloudflared
+      # ============================================================
+      - name: 7. Install Cloudflared
+        run: |
+          curl -sL -o cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          echo "✅ Cloudflared installed"
+
+      # ============================================================
+      # STEP 8: Start Cloudflare Tunnel
+      # ============================================================
+      - name: 8. Start Cloudflare Tunnel
+        run: |
+          nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared.log 2>&1 &
+          sleep 15
+          
+          URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -1)
+          
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════╗"
+          echo "║         🎉 HERMES WEBUI IS READY!                       ║"
+          echo "╚══════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "  🌐 URL:      $URL"
+          echo "  💾 Storage:  Backblaze B2 ($B2_BUCKET)"
+          echo "  📦 Archive:  $B2_ARCHIVE_NAME"
+          echo "  🔄 Sync:     Every ${{ github.event.inputs.sync_interval_min || '10' }} minutes"
+          echo "  🐳 Docker:   Enabled (Docker-out-of-Docker)"
+          echo ""
+          echo "╚══════════════════════════════════════════════════════════╝"
+
+      # ============================================================
+      # STEP 9: Keep Alive + Sync Loop (NO CLEANUP)
+      # ============================================================
+      - name: 9. Keep Alive & Periodic Sync to B2
+        env:
+          DURATION_HOURS: ${{ github.event.inputs.duration_hours || '6' }}
+          SYNC_INTERVAL: ${{ github.event.inputs.sync_interval_min || '10' }}
+        run: |
+          echo "=========================================="
+          echo "🔄 Starting keep-alive loop..."
+          echo "=========================================="
+          echo "Duration:        $DURATION_HOURS hours"
+          echo "Sync interval:   $SYNC_INTERVAL minutes"
+          echo "Archive name:    $B2_ARCHIVE_NAME"
+          echo ""
+          
+          TOTAL_MINUTES=$((DURATION_HOURS * 60))
+          SYNC_COUNT=0
+          
+          sync_to_b2() {
+            local ARCHIVE_PATH="/tmp/hermes-data-sync.tar.gz"
+            
+            echo ""
+            echo "┌────────────────────────────────────────┐"
+            echo "│  📦 SYNC #$((SYNC_COUNT + 1)) to B2 starting...  │"
+            echo "└────────────────────────────────────────┘"
+            
+            echo "  ⏳ Creating archive..."
+            tar -czf "$ARCHIVE_PATH" \
+              -C /data/.hermes \
+              --exclude='.git' \
+              --exclude='node_modules' \
+              --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='cache/*.log' \
+              --exclude='webui/sessions/_run_journal' \
+              . 2>/dev/null || true
+            
+            local ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
+            echo "  ✅ Archive created: $ARCHIVE_SIZE"
+            
+            echo "  🚀 Uploading to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
+            if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
+              echo "  ✅ Upload successful"
+              SYNC_COUNT=$((SYNC_COUNT + 1))
+            else
+              echo "  ❌ Upload failed!"
+            fi
+            
+            rm -f "$ARCHIVE_PATH"
+            echo "  ✅ Sync #$SYNC_COUNT completed"
+          }
+          
+          for i in $(seq 1 $TOTAL_MINUTES); do
+            sleep 60
+            
+            if ! docker ps | grep -q hermes-webui; then
+              echo "❌ Container died! Restarting..."
+              docker start hermes-webui 2>/dev/null || true
+              sleep 10
+            fi
+            
+            if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
+              echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') ✅ Healthy"
+            else
+              echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') ⚠️  Health check failed"
+            fi
+            
+            if ! pgrep -f cloudflared > /dev/null; then
+              echo "⚠️  Cloudflared died! Restarting..."
+              nohup ./cloudflared tunnel --url http://localhost:8787 > /tmp/cloudflared-restart.log 2>&1 &
+              sleep 5
+            fi
+            
+            if [ $((i % SYNC_INTERVAL)) -eq 0 ]; then
+              sync_to_b2
+            fi
+            
+            if [ $((i % 30)) -eq 0 ]; then
+              echo ""
+              echo "========== Containers =========="
+              docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              echo ""
+            fi
+          done
+          
+          echo ""
+          echo "✅ Keep-alive loop completed"
+          echo "📊 Total syncs performed: $SYNC_COUNT"
+
+      # ============================================================
+      # STEP 10: Final Sync (NO CLEANUP)
+      # ============================================================
+      - name: 10. Final Sync on Shutdown
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "💾 FINAL SYNC - Saving all data to B2..."
+          echo "=========================================="
+          
+          echo "🛑 Stopping Hermes container..."
+          docker stop hermes-webui 2>/dev/null || true
+          sleep 5
+          
+          ARCHIVE_PATH="/tmp/hermes-data-final.tar.gz"
+          
+          echo "📦 Creating final archive..."
+          tar -czf "$ARCHIVE_PATH" \
+            -C /data/.hermes \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            . 2>/dev/null || true
+          
+          ARCHIVE_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
+          echo "✅ Final archive created: $ARCHIVE_SIZE"
+          
+          echo "🚀 Uploading final archive to b2:$B2_BUCKET/$B2_ARCHIVE_NAME ..."
+          if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
+            echo "✅ Final sync completed successfully!"
+          else
+            echo "❌ Final sync failed!"
+            exit 1
+          fi
+          
+          rm -f "$ARCHIVE_PATH"
