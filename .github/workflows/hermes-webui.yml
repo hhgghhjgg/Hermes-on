@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       duration_hours:
-        description: 'Duration in hours (max 6)'
+        description: Duration in hours
         required: false
         default: '6'
       sync_interval_min:
-        description: 'Sync interval in minutes'
+        description: Sync interval in minutes
         required: false
         default: '10'
 
@@ -23,95 +23,57 @@ jobs:
     timeout-minutes: 420
 
     steps:
-      - name: 1. Checkout Code Repository
+      - name: Checkout Code Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: 2. Install rclone
+      - name: Install rclone
         run: |
-          echo "Installing rclone..."
           curl -sSL https://rclone.org/install.sh | sudo bash
-          echo "rclone version: $(rclone version | head -1)"
+          rclone version | head -1
 
-      - name: 3. Configure rclone for B2
+      - name: Configure rclone for B2
         env:
           B2_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
           B2_APP_KEY: ${{ secrets.B2_APPLICATION_KEY }}
         run: |
-          echo "Configuring rclone for B2..."
           mkdir -p ~/.config/rclone
           printf '[b2]\ntype = b2\naccount = %s\nkey = %s\n' "$B2_KEY_ID" "$B2_APP_KEY" > ~/.config/rclone/rclone.conf
-          echo "rclone config created"
-          
-          if rclone lsd b2: > /dev/null 2>&1; then
-            echo "B2 connection successful"
-          else
-            echo "B2 connection failed!"
-            exit 1
-          fi
-          
-          if rclone lsd b2: | grep -q "$B2_BUCKET"; then
-            echo "Bucket found: $B2_BUCKET"
-          else
-            echo "Bucket not found: $B2_BUCKET"
-            exit 1
-          fi
+          rclone lsd b2: > /dev/null 2>&1 || { echo "B2 connection failed"; exit 1; }
+          rclone lsd b2: | grep -q "$B2_BUCKET" || { echo "Bucket not found"; exit 1; }
+          echo "B2 configured"
 
-      - name: 4. Restore Data from B2
+      - name: Restore Data from B2
         run: |
-          echo "=========================================="
-          echo "Restoring data from B2..."
-          echo "=========================================="
           sudo mkdir -p /data/.hermes /data/.9router
-          sudo chown -R $(whoami) /data/.hermes /data/.9router
-          mkdir -p /tmp/hermes-backup /tmp/router-backup
-          
-          if rclone ls b2:$B2_BUCKET/$B2_ARCHIVE_NAME 2>/dev/null | grep -q .; then
-            rclone copyto b2:$B2_BUCKET/$B2_ARCHIVE_NAME /tmp/hermes-backup/$B2_ARCHIVE_NAME
-            tar -xzf /tmp/hermes-backup/$B2_ARCHIVE_NAME -C /data/.hermes
-            HERMES_FILES=$(find /data/.hermes -type f 2>/dev/null | wc -l)
-            echo "Hermes restored: $HERMES_FILES files"
+          sudo chown -R "$USER" /data/.hermes /data/.9router
+          mkdir -p /tmp/hbackup /tmp/rbackup
+          if rclone ls "b2:${B2_BUCKET}/${B2_ARCHIVE_NAME}" 2>/dev/null | grep -q .; then
+            rclone copyto "b2:${B2_BUCKET}/${B2_ARCHIVE_NAME}" "/tmp/hbackup/${B2_ARCHIVE_NAME}"
+            tar -xzf "/tmp/hbackup/${B2_ARCHIVE_NAME}" -C /data/.hermes
+            echo "Hermes restored"
           else
-            echo "No Hermes archive found - starting fresh"
+            echo "No Hermes archive"
           fi
-          
-          if rclone ls b2:$B2_BUCKET/$ROUTER_ARCHIVE_NAME 2>/dev/null | grep -q .; then
-            rclone copyto b2:$B2_BUCKET/$ROUTER_ARCHIVE_NAME /tmp/router-backup/$ROUTER_ARCHIVE_NAME
-            tar -xzf /tmp/router-backup/$ROUTER_ARCHIVE_NAME -C /data/.9router
-            ROUTER_FILES=$(find /data/.9router -type f 2>/dev/null | wc -l)
-            echo "9Router restored: $ROUTER_FILES files"
+          if rclone ls "b2:${B2_BUCKET}/${ROUTER_ARCHIVE_NAME}" 2>/dev/null | grep -q .; then
+            rclone copyto "b2:${B2_BUCKET}/${ROUTER_ARCHIVE_NAME}" "/tmp/rbackup/${ROUTER_ARCHIVE_NAME}"
+            tar -xzf "/tmp/rbackup/${ROUTER_ARCHIVE_NAME}" -C /data/.9router
+            echo "9Router restored"
           else
-            echo "No 9Router archive found - starting fresh"
+            echo "No 9Router archive"
           fi
-          
-          rm -rf /tmp/hermes-backup /tmp/router-backup
+          rm -rf /tmp/hbackup /tmp/rbackup
 
-      - name: 5. Build Hermes Docker Image
-        run: |
-          echo "Building Hermes image..."
-          docker build -t hermes-webui:latest .
-          echo "Hermes image built"
+      - name: Build Hermes Docker Image
+        run: docker build -t hermes-webui:latest .
 
-      - name: 6. Create Shared Docker Network
-        run: |
-          echo "Creating shared network..."
-          docker network create hermes-net 2>/dev/null || true
-          echo "Network created"
+      - name: Create Docker Network
+        run: docker network create hermes-net || true
 
-      - name: 7. Get Host IP for Nginx
-        id: host_ip
-        run: |
-          HOST_IP=$(ip route get 1.1.1.1 | grep -oP 'src \K\S+')
-          echo "HOST_IP=$HOST_IP"
-          echo "host_ip=$HOST_IP" >> $GITHUB_OUTPUT
-
-      - name: 8. Start Hermes Container
+      - name: Start Hermes Container
         env:
-          GITHUB_TOKEN: ${{ secrets.HERMES_GH_TOKEN }}
           HERMES_WEBUI_PASSWORD: ${{ secrets.HERMES_WEBUI_PASSWORD }}
-          HERMES_WEBUI_HOST: "0.0.0.0"
-          HERMES_WEBUI_PORT: "8787"
           OMNIROUTE_URL: ${{ secrets.OMNIROUTE_URL }}
           HERMES_WEBUI_DEFAULT_MODEL: ${{ secrets.HERMES_WEBUI_DEFAULT_MODEL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -120,323 +82,127 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          echo "Starting Hermes container..."
           DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)
-          docker run -d \
-            --restart on-failure \
-            --name hermes-webui \
-            --network hermes-net \
-            -p 8787:8787 \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v /data:/data \
-            --group-add $DOCKER_SOCK_GID \
-            -e HERMES_WEBUI_PASSWORD="$HERMES_WEBUI_PASSWORD" \
-            -e HERMES_WEBUI_HOST="$HERMES_WEBUI_HOST" \
-            -e HERMES_WEBUI_PORT="$HERMES_WEBUI_PORT" \
-            -e OMNIROUTE_URL="$OMNIROUTE_URL" \
-            -e HERMES_WEBUI_DEFAULT_MODEL="$HERMES_WEBUI_DEFAULT_MODEL" \
-            -e GEMINI_API_KEY="$GEMINI_API_KEY" \
-            -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-            -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-            -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-            -e GITHUB_SYNC_DISABLED=true \
-            hermes-webui:latest
-            
-          echo "Waiting 60 seconds for Hermes to start..."
+          docker run -d --restart on-failure --name hermes-webui --network hermes-net -p 8787:8787 -v /var/run/docker.sock:/var/run/docker.sock -v /data:/data --group-add "${DOCKER_SOCK_GID}" -e HERMES_WEBUI_PASSWORD -e HERMES_WEBUI_HOST=0.0.0.0 -e HERMES_WEBUI_PORT=8787 -e OMNIROUTE_URL -e HERMES_WEBUI_DEFAULT_MODEL -e GEMINI_API_KEY -e OPENROUTER_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e DEEPSEEK_API_KEY -e GITHUB_SYNC_DISABLED=true hermes-webui:latest
           sleep 60
-          
-          if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
-            echo "Hermes is running!"
-            curl -s http://localhost:8787/health
-          else
-            echo "Hermes failed to start!"
-            docker logs hermes-webui --tail 50
-            exit 1
-          fi
+          curl -sf http://localhost:8787/health || { docker logs hermes-webui --tail 50; exit 1; }
+          echo "Hermes is running"
 
-      - name: 9. Start 9Router Container (Official Image)
+      - name: Start 9Router Container
         run: |
-          echo "Starting 9Router container..."
-          docker run -d \
-            --restart on-failure \
-            --name 9router \
-            --network hermes-net \
-            -p 20128:20128 \
-            -v /data/.9router:/app/data \
-            decolua/9router:latest
-            
-          echo "Waiting 45 seconds for 9Router to start..."
+          docker run -d --restart on-failure --name 9router --network hermes-net -p 20128:20128 -v /data/.9router:/app/data decolua/9router:latest
           sleep 45
-          echo ""
-          echo "Checking 9Router status..."
-          docker ps | grep 9router || echo "9Router container not found!"
-          echo ""
-          echo "9Router logs (last 30 lines):"
-          docker logs --tail 30 9router 2>&1 || echo "No logs available"
-          echo ""
-          
-          if curl -f -s http://localhost:20128 > /dev/null 2>&1; then
-            echo "9Router is responding!"
-          else
-            echo "9Router not responding yet (may need more time)"
-          fi
+          docker logs --tail 30 9router || true
+          curl -sf http://localhost:20128 > /dev/null 2>&1 && echo "9Router OK" || echo "9Router not ready yet"
 
-      - name: 10. Setup Nginx Reverse Proxy
+      - name: Write Nginx Config File
         run: |
-          echo "Setting up Nginx reverse proxy..."
-          HOST_IP="${{ steps.host_ip.outputs.host_ip }}"
-          echo "Using host IP: $HOST_IP"
           mkdir -p /tmp/nginx-config
-          
-          cat > /tmp/nginx-config/nginx.conf <<EOF
-          server {
-              listen 8080;
-              server_name _;
-              
-              location / {
-                  proxy_pass http://$HOST_IP:8787;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade \$http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host \$host;
-                  proxy_set_header X-Real-IP \$remote_addr;
-                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto \$scheme;
-                  proxy_buffering off;
-                  proxy_cache off;
-                  chunked_transfer_encoding on;
-              }
-              
-              location /9route/ {
-                  proxy_pass http://$HOST_IP:20128/;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade \$http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host \$host;
-                  proxy_set_header X-Real-IP \$remote_addr;
-                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto \$scheme;
-                  proxy_buffering off;
-                  proxy_cache off;
-                  chunked_transfer_encoding on;
-              }
-              
-              location /9route-api/ {
-                  proxy_pass http://$HOST_IP:20128/;
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade \$http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_set_header Host \$host;
-                  proxy_set_header X-Real-IP \$remote_addr;
-                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto \$scheme;
-                  proxy_buffering off;
-                  proxy_cache off;
-                  chunked_transfer_encoding on;
-              }
-          }
-          EOF
-          
-          echo "Nginx config created"
+          python3 -c "
+          c  = 'server {\n'
+          c += '  listen 8080;\n'
+          c += '  server_name _;\n'
+          c += '  location / {\n'
+          c += '    proxy_pass http://hermes-webui:8787;\n'
+          c += '    proxy_http_version 1.1;\n'
+          c += '    proxy_set_header Host \$host;\n'
+          c += '    proxy_set_header X-Real-IP \$remote_addr;\n'
+          c += '    proxy_buffering off;\n'
+          c += '  }\n'
+          c += '  location /9route/ {\n'
+          c += '    proxy_pass http://9router:20128/;\n'
+          c += '    proxy_http_version 1.1;\n'
+          c += '    proxy_set_header Host \$host;\n'
+          c += '    proxy_set_header X-Real-IP \$remote_addr;\n'
+          c += '    proxy_buffering off;\n'
+          c += '  }\n'
+          c += '  location /9route-api/ {\n'
+          c += '    proxy_pass http://9router:20128/;\n'
+          c += '    proxy_http_version 1.1;\n'
+          c += '    proxy_set_header Host \$host;\n'
+          c += '    proxy_set_header X-Real-IP \$remote_addr;\n'
+          c += '    proxy_buffering off;\n'
+          c += '  }\n'
+          c += '}\n'
+          open('/tmp/nginx-config/nginx.conf','w').write(c)
+          print('Nginx config written')
+          "
           cat /tmp/nginx-config/nginx.conf
-          echo ""
-          
-          docker run -d \
-            --restart on-failure \
-            --name nginx-proxy \
-            --network hermes-net \
-            -p 8080:8080 \
-            -v /tmp/nginx-config/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
-            nginx:alpine
-            
-          echo "Waiting 15 seconds for Nginx to start..."
-          sleep 15
-          
-          if curl -f -s http://localhost:8080/ > /dev/null 2>&1; then
-            echo "Nginx is running!"
-          else
-            echo "Nginx failed to start!"
-            docker logs nginx-proxy --tail 20
-            exit 1
-          fi
 
-      - name: 11. Install Cloudflared
+      - name: Start Nginx Container
+        run: |
+          docker run -d --restart on-failure --name nginx-proxy --network hermes-net -p 8080:8080 -v /tmp/nginx-config/nginx.conf:/etc/nginx/conf.d/default.conf:ro nginx:alpine
+          sleep 15
+          curl -sf http://localhost:8080/ > /dev/null 2>&1 || { docker logs nginx-proxy --tail 20; exit 1; }
+          echo "Nginx is running"
+
+      - name: Install Cloudflared
         run: |
           curl -sL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
-          echo "Cloudflared installed"
 
-      - name: 12. Start Cloudflare Tunnel
+      - name: Start Cloudflare Tunnel
         run: |
           nohup ./cloudflared tunnel --url http://localhost:8080 > /tmp/cloudflared.log 2>&1 &
           sleep 15
           URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/cloudflared.log | head -1)
-          
-          echo ""
           echo "=========================================="
-          echo "ALL SERVICES ARE READY!"
+          echo "ALL SERVICES READY"
           echo "=========================================="
-          echo ""
-          echo "Hermes WebUI:  $URL"
-          echo "9Router Panel: $URL/9route/"
-          echo "9Router API:   $URL/9route-api/v1"
-          echo ""
-          echo "Storage:       Backblaze B2 ($B2_BUCKET)"
-          echo "Sync:          Every ${{ github.event.inputs.sync_interval_min || '10' }} minutes"
-          echo ""
+          echo "Hermes WebUI   ${URL}"
+          echo "9Router Panel  ${URL}/9route/"
+          echo "9Router API    ${URL}/9route-api/v1"
           echo "=========================================="
 
-      - name: 13. Keep Alive and Periodic Sync
+      - name: Keep Alive and Sync
         env:
           DURATION_HOURS: ${{ github.event.inputs.duration_hours || '6' }}
           SYNC_INTERVAL: ${{ github.event.inputs.sync_interval_min || '10' }}
         run: |
-          echo "=========================================="
-          echo "Starting keep-alive loop..."
-          echo "=========================================="
-          echo "Duration:      $DURATION_HOURS hours"
-          echo "Sync interval: $SYNC_INTERVAL minutes"
-          echo ""
-          
           TOTAL_MINUTES=$((DURATION_HOURS * 60))
           SYNC_COUNT=0
-          
           sync_to_b2() {
-            local ARCHIVE_PATH="/tmp/hermes-data-sync.tar.gz"
-            local ROUTER_PATH="/tmp/9router-data-sync.tar.gz"
-            echo ""
-            echo "SYNC #$((SYNC_COUNT + 1)) to B2 starting..."
-            
-            echo "Creating Hermes archive..."
-            tar -czf "$ARCHIVE_PATH" \
-              -C /data/.hermes \
-              --exclude='.git' \
-              --exclude='node_modules' \
-              --exclude='__pycache__' \
-              --exclude='*.pyc' \
-              --exclude='cache/*.log' \
-              --exclude='webui/sessions/_run_journal' \
-              . 2>/dev/null || true
-              
-            local HERMES_SIZE=$(du -h "$ARCHIVE_PATH" | cut -f1)
-            echo "Hermes archive created: $HERMES_SIZE"
-            echo "Uploading Hermes archive to B2..."
-            if rclone copyto "$ARCHIVE_PATH" b2:$B2_BUCKET/$B2_ARCHIVE_NAME; then
-              echo "Hermes upload successful"
-            else
-              echo "Hermes upload failed!"
-            fi
-            
-            echo "Creating 9Router archive..."
-            tar -czf "$ROUTER_PATH" \
-              -C /data/.9router \
-              --exclude='.git' \
-              --exclude='node_modules' \
-              --exclude='__pycache__' \
-              --exclude='*.pyc' \
-              . 2>/dev/null || true
-              
-            local ROUTER_SIZE=$(du -h "$ROUTER_PATH" | cut -f1)
-            echo "9Router archive created: $ROUTER_SIZE"
-            echo "Uploading 9Router archive to B2..."
-            if rclone copyto "$ROUTER_PATH" b2:$B2_BUCKET/$ROUTER_ARCHIVE_NAME; then
-              echo "9Router upload successful"
-            else
-              echo "9Router upload failed!"
-            fi
-            
-            rm -f "$ARCHIVE_PATH" "$ROUTER_PATH"
+            echo "SYNC $((SYNC_COUNT + 1)) starting"
+            tar -czf /tmp/hsync.tar.gz -C /data/.hermes --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' . 2>/dev/null || true
+            rclone copyto /tmp/hsync.tar.gz "b2:${B2_BUCKET}/${B2_ARCHIVE_NAME}" && echo "Hermes upload OK" || echo "Hermes upload failed"
+            tar -czf /tmp/rsync2.tar.gz -C /data/.9router --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' . 2>/dev/null || true
+            rclone copyto /tmp/rsync2.tar.gz "b2:${B2_BUCKET}/${ROUTER_ARCHIVE_NAME}" && echo "9Router upload OK" || echo "9Router upload failed"
+            rm -f /tmp/hsync.tar.gz /tmp/rsync2.tar.gz
             SYNC_COUNT=$((SYNC_COUNT + 1))
-            echo "Sync #$SYNC_COUNT completed"
           }
-          
           for i in $(seq 1 $TOTAL_MINUTES); do
             sleep 60
-            
-            # Check and restart containers if needed
             for container in hermes-webui 9router nginx-proxy; do
-              if ! docker ps | grep -q $container; then
-                echo "Container $container died! Restarting..."
-                docker start $container 2>/dev/null || true
+              if ! docker ps | grep -q "$container"; then
+                echo "$container died, restarting"
+                docker start "$container" 2>/dev/null || true
                 sleep 5
               fi
             done
-            
-            # Health checks
-            if curl -f -s http://localhost:8787/health > /dev/null 2>&1; then
-              echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') Hermes healthy"
-            else
-              echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') Hermes health check failed"
-            fi
-            
-            if curl -f -s http://localhost:20128 > /dev/null 2>&1; then
-              echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') 9Router healthy"
-            else
-              echo "[$i/$TOTAL_MINUTES] $(date '+%H:%M:%S') 9Router not responding"
-            fi
-            
-            # Restart cloudflared if dead
+            curl -sf http://localhost:8787/health > /dev/null 2>&1 && echo "[$i/$TOTAL_MINUTES] Hermes OK" || echo "[$i/$TOTAL_MINUTES] Hermes FAIL"
+            curl -sf http://localhost:20128 > /dev/null 2>&1 && echo "[$i/$TOTAL_MINUTES] 9Router OK" || echo "[$i/$TOTAL_MINUTES] 9Router FAIL"
             if ! pgrep -f cloudflared > /dev/null; then
-              echo "Cloudflared died! Restarting..."
-              nohup ./cloudflared tunnel --url http://localhost:8080 > /tmp/cloudflared-restart.log 2>&1 &
+              nohup ./cloudflared tunnel --url http://localhost:8080 > /tmp/cf2.log 2>&1 &
               sleep 5
             fi
-            
-            # Periodic sync
             if [ $((i % SYNC_INTERVAL)) -eq 0 ]; then
               sync_to_b2
             fi
-            
-            # Periodic stats
             if [ $((i % 30)) -eq 0 ]; then
-              echo ""
-              echo "========== Containers =========="
               docker ps
-              echo ""
-              echo "========== Memory Usage =========="
               docker stats --no-stream
-              echo ""
             fi
           done
-          
-          echo ""
-          echo "Keep-alive loop completed"
-          echo "Total syncs performed: $SYNC_COUNT"
+          echo "Loop done. Syncs: $SYNC_COUNT"
 
-      - name: 14. Final Sync on Shutdown
+      - name: Final Sync on Shutdown
         if: always()
         run: |
-          echo "=========================================="
-          echo "FINAL SYNC - Saving all data to B2..."
-          echo "=========================================="
-          echo "Stopping containers..."
           docker stop hermes-webui 9router nginx-proxy 2>/dev/null || true
           sleep 5
-          
-          echo "Creating final Hermes archive..."
-          tar -czf /tmp/hermes-data-final.tar.gz \
-            -C /data/.hermes \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='__pycache__' \
-            --exclude='*.pyc' \
-            . 2>/dev/null || true
-            
-          echo "Uploading final Hermes archive..."
-          rclone copyto /tmp/hermes-data-final.tar.gz b2:$B2_BUCKET/$B2_ARCHIVE_NAME
-          
-          echo "Creating final 9Router archive..."
-          tar -czf /tmp/9router-data-final.tar.gz \
-            -C /data/.9router \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='__pycache__' \
-            --exclude='*.pyc' \
-            . 2>/dev/null || true
-            
-          echo "Uploading final 9Router archive..."
-          rclone copyto /tmp/9router-data-final.tar.gz b2:$B2_BUCKET/$ROUTER_ARCHIVE_NAME
-          
-          echo "Final sync completed successfully!"
-          rm -f /tmp/hermes-data-final.tar.gz /tmp/9router-data-final.tar.gz
+          tar -czf /tmp/hfinal.tar.gz -C /data/.hermes --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' . 2>/dev/null || true
+          rclone copyto /tmp/hfinal.tar.gz "b2:${B2_BUCKET}/${B2_ARCHIVE_NAME}" || true
+          tar -czf /tmp/rfinal.tar.gz -C /data/.9router --exclude='.git' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' . 2>/dev/null || true
+          rclone copyto /tmp/rfinal.tar.gz "b2:${B2_BUCKET}/${ROUTER_ARCHIVE_NAME}" || true
+          rm -f /tmp/hfinal.tar.gz /tmp/rfinal.tar.gz
+          echo "Final sync done"
